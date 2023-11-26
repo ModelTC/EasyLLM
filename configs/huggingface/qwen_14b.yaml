@@ -1,0 +1,132 @@
+runtime:
+  seed: &seed 131
+  deepspeed: True
+  gradient_checkpointing: True
+  gradient_accumulation_steps: &gas 1
+  bf16: &bf16 True
+  fp16: &fp16 False
+
+deepspeed:
+  enabled: True
+  config:
+    zero_optimization:
+      stage: 1
+      allgather_partitions: true
+      allgather_bucket_size: 1.0e+8
+      overlap_comm: true
+      reduce_scatter: true
+      reduce_bucket_size: 1.0e+8
+      contiguous_gradients: true
+    bf16:
+      enabled: *bf16
+    fp16:
+      enabled: *fp16
+      loss_scale: 0
+      loss_scale_window: 100
+      initial_scale_power: 16
+      hysteresis: 2
+      min_loss_scale: 1.0e-10
+    steps_per_print: 2000
+    gradient_clipping: 1.0
+    wall_clock_breakdown: False
+    zero_allow_untested_optimizer: true
+    train_micro_batch_size_per_gpu: "auto"
+    train_batch_size: "auto"
+    gradient_accumulation_steps: *gas
+
+tokenizer:
+  type: QWenTokenizer
+  kwargs:
+    tokenizer_name_or_path: &file_path qwen_14b_base
+    use_auth_token: False
+
+
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 2048
+    parser_type: simple_chat
+
+data:
+  data_types: [train]
+  train:
+    dataset:
+      type: base_nlp_json
+      kwargs:
+        json_file: your/json/path
+        transformer: [*tokenization]
+        json_type: line
+    batch_collector:
+      type: batch_align
+      kwargs:
+        alignment: 1
+        max_seq_length: *train_seq_length
+    batch_sampler:
+      type: base
+      kwargs:
+        sampler:
+          type: dist
+        batch_size: 2
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 4
+        pin_memory: True
+        seed: *seed
+
+trainer:
+  train_iters: &train_iters 1050
+  optimizer:
+    type: AdamW
+    kwargs:
+      lr: 2.e-5
+      weight_decay: 0
+      betas: [0.9, 0.95]
+      eps: 1.e-8
+  lr_scheduler:
+    type: hf_cosine
+    kwargs:
+      warmup_steps: 20
+      training_steps: *train_iters
+
+saver:
+  enable: True
+  save_interval: 350
+  save_path: qwen/checkpoint
+  save_mode: huggingface
+  save_optim: True
+  save_rng_state: True
+
+
+loader:
+  enabled: False
+  load_path: qwen/checkpoint/checkpoint-350
+  load_mode: deepspeed
+  load_optim: True
+  load_rng_state: True
+
+
+hooks:
+  - type: hf_train_val_logger
+    kwargs:
+      log_interval: 10
+      tensorboard: False
+  - type: dynamic_checkpoint
+    kwargs:
+        enable: False
+        debug_freq: 10
+        strategy:
+          type: predefine
+          kwargs:
+            size_map:
+              512: 0 
+              1024: 16
+              2048: 16
+
+model:
+  type: QWenForCausalLM
+  kwargs:
+    model_name_or_path: *file_path
+    torch_dtype: bfloat16
+    trust_remote_code: True

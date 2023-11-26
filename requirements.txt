@@ -1,0 +1,16 @@
+http://spring.sensetime.com/pypi/packages/petrel_oss_sdk-2.2.0_19_gac5c680_master-py3-none-any.whl
+boto3==1.26.139
+datasets==2.9.0
+regex==2023.5.5
+pytest==7.3.1
+accelerate==0.21.0
+sentencepiece==0.1.99
+pycryptodome==3.18.0
+tokenizers==0.13.3
+peft==0.6.2
+transformers==4.34.0
+flash-attn==2.2.5
+apex=0.1
+# http://spring.sensetime.com/pypi/packages/flash_attn-2.2.5+cu116torch1.13cxx11abiFALSE-cp38-cp38-linux_x86_64.whl
+# http://spring.sensetime.com/pypi/packages/dropout_layer_norm-0.1-cp38-cp38-linux_x86_64.whl
+# http://spring.sensetime.com/pypi/packages/apex-0.1-cp38-cp38-linux_x86_64.whl

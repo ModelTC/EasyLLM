@@ -1,0 +1,19 @@
+# image: "registry.sensetime.com/spring/dka:easyllm-1.0.0_lightllm-1.4.1"
+image: "registry.sensetime.com/spring/dka:pytorch1.5.0_fix_230308"
+before_script:
+  - gcc --version
+  - nvcc --version
+  - nvidia-smi
+  - python -c "import torch; print(torch.__version__);"
+  - python -c "from torch.utils.collect_env import get_pretty_env_info; print(get_pretty_env_info())"
+
+
+style:
+  tags:
+    - gpu
+  stage: build
+  script:
+    - pip install flake8
+    - flake8 .
+  except:
+    - schedules

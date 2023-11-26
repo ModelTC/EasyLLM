@@ -1,0 +1,184 @@
+runtime:
+  seed: &seed 42                             # [integer] 随机数种子设置
+  tensor_model_parallel_size: 4              # [integer] model parallel 参数: 需要能被 attention head 数量整除
+  pipeline_model_parallel_size: 2            # [integer] model parallel 参数: tensor_model_parallel_size 与 pipeline_model_parallel_size 的乘积需要能被调用的总gpu数量整除
+  deepspeed: True                            # [true|false] 是否启用 deepspeed, 目前仅支持deepspeed=True模式
+  lora_mode: True                            # [true|false] 是否启用 lora 参数
+  bf16: True                                 # [true|false] 是否使用 bfloat16 数据类型, 使用 deepspeed 时需要与 deepspeed 配置对齐
+  fp16: False                                # [true|false] 是否使用 float16 数据类型, 使用 deepspeed 时需要与 deepspeed 配置对齐
+  dynamic: True                              # [true|false] 是否启用动态图优化
+
+# deepspeed 的相关配置
+# 全部参数配置可参考：https://www.deepspeed.ai/docs/config-json
+deepspeed:
+  config:
+    gradient_clipping: 1.0                   # [float] Enable gradient clipping with value
+    zero_optimization:
+      stage: 0                               # [0|1|2|3] 分别代表禁用、对 optimizer 的参数切分、optimizer+梯度+模型参数切分, 启用tp, pp时不建议启用zero_optim
+    bf16:
+      enabled: True                          
+    fp16:
+      enabled: False
+    steps_per_print: 2000                    # [integer] Print progress report every N training steps
+    wall_clock_breakdown: False              # [true|false] Enable timing of the latency of forward/backward/update training phases
+
+# tokenizer 相关配置
+tokenizer:
+  type: LlamaTokenizer
+  kwargs:
+    tokenizer_name_or_path: llama2-7b
+    tokenizer_kwargs: {
+      "bos_token": "<s>",
+      "eos_token": "</s>",
+      "unk_token": "<unk>"
+    } 
+  pad_vocab_size_to: 32000
+  make_vocab_size_divisible_by: 8
+
+# tokenization 主要用于数据的组织、label 的处理及转为 token
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 2048             # 输入的最大长度
+    ignore_index: -100                                 # 忽略的 index
+    parser_type: simple_chat                          # [base|simple_chat|sense_chat|simple_chat|...] 处理的类型
+    parser_kwargs:                                     # parser 的相关参数
+      keep_all_keys: False                             # [true|false] 训练时是否指定所有输入token参与训练
+
+
+# 只在模型测试时使用的 tokenization
+# infer_tokenization:
+#   type: sense_tokenization
+#   kwargs:
+#     max_seq_length: 2048
+#     parser_type: simple_chat
+#     parser_kwargs:
+#       inference_mode: True                            # [true|false] 是否启用测试时模式，模型评测时开启，训练时关闭
+
+
+# 只在模型数据集评测时使用
+# infer_cfg:
+#   eval_task: base                                                          # [base|ceval|cmmlu|human_eval], 评测数据集类型
+#   question_file: ./questions.jsonl                                         # 评测数据文件路径
+#   result_file: results.jsonl                                               # 结果保存路径
+#   generation_cfg:                                                          # 推理超参数
+#     temperature: 0.2
+#     top_k: 40
+#     top_p: 0.9
+#     do_sample: True
+#     num_beams: 1
+#     repetition_penalty: 1.3
+#     max_new_tokens: 512 
+
+
+# 数据集相关配置
+data:
+  data_types: [train]
+  train:
+    seq_length: *train_seq_length
+    global_batch_size: &train_global_batch_size 128
+    micro_batch_size: &train_micro_batch_size 2
+    dataset:
+      type: base_nlp_json                                # [base_nlp_json|mmap_json|mmap_index_json]
+      kwargs:
+        json_file: /path/to/data.jsonl                   # 数据文件路径
+        transformer: [*tokenization]                     # 数据预处理
+        json_type: line                                   # [all|line] 设置规则可参照README.md
+    batch_sampler:
+      type: megatron_pretrain
+      kwargs:
+        micro_batch_size: *train_micro_batch_size
+        drop_last: True
+    batch_collector:
+      type: batch_align                                  # [batch_align|batch|reward_batch|...]
+      kwargs:
+        alignment: 2048                                  # align 的 size 为 math.ceil(max_size / float(alignment)) * alignment
+        max_seq_length: *train_seq_length                # 训练的最大长度
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 2
+        pin_memory: True
+        seed: *seed
+    batch_pipe:
+      type: json_batch_pipe
+      kwargs:
+        reset_position_ids: False
+        reset_attention_mask: False
+        eod_mask_loss: True
+        loss_on_targets_only: True
+    # notice the batch_calculator only works at the training time
+    batch_calculator:
+      type: rampup_batch_size_num
+      kwargs:
+        start_batch_size: 32
+        batch_size_increment: 8
+        ramup_samples: 1000
+        global_batch_size: *train_global_batch_size
+        micro_batch_size: *train_micro_batch_size
+
+
+trainer:
+  train_iters: 1000
+  optimizer:
+    type: FusedAdam      # apex FusedAdam
+    kwargs:
+      lr: 2.e-5
+      weight_decay: 0
+      betas: [0.9, 0.95]
+      eps: 1.e-8
+  lr_scheduler:
+    type: iter_base_annealing
+    kwargs:
+      min_lr: 1.e-6
+      decay_style: cosine
+      lr_warmup_iters: 100
+      lr_decay_iters: 800
+      use_checkpoint_lr_scheduler: False
+      override_lr_scheduler: False
+
+saver:
+  save_path: checkpoints/ds       # 模型保存路径
+  save_interval: 100              # 每 500 iter 保存一次
+  save_mode: deepspeed            # [deepspeed|huggingface] 模型保存类型
+  save_optim: True                # [true|false] 是否保存 optimizer
+  save_rng_state: True            # [true|false] 是否保存 rng state
+  save_zero: True                 # [true|false] 是否保存 zero
+
+loader:
+  load_path: checkpoints/hf       # 待加载模型路径
+  load_mode: huggingface          # [deepspeed|huggingface] 待加载模型权重类型
+  load_optim: True                # [true|false] 是否加载优化器参数
+  load_rng_state: True            # [true|false] 是否加载rng_state
+  load_zero: True                 # [true|false] 是否加载 zero
+  load_base_state: True           # [true|false] true for resume，false for pretrain
+  debug: False                    # [true|false] 是否启用debug模式, debug模式不加载模型参数，启动速度会加快
+
+
+hooks:
+  - type: train_val_logger
+    kwargs:
+      log_interval: 1             # 日志打印间隔
+      report_memory_interval: 10
+
+# lora 相关配置，具体可参考 https://arxiv.org/abs/2106.09685
+lora:
+  lora_rank: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'gate_proj', 'down_proj', 'up_proj']
+  saver:
+    modules_to_save: ['word_embeddings', 'lm_head']
+    only_save_trainable: True
+    save_path: checkpoints/lora
+    save_mode: deepspeed
+
+model:
+  type: llama_custom
+  kwargs:
+    num_layers: 32
+    hidden_size: 4096
+    num_attention_heads: 32
+    intermediate_size: 11008
+    num_kv_attention_heads: 32

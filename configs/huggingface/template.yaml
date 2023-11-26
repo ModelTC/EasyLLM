@@ -1,0 +1,143 @@
+runtime:
+  seed: &seed 131
+  deepspeed: True
+  gradient_checkpointing: True
+  gradient_accumulation_steps: &gas 1
+  bf16: &bf16 True
+  fp16: &fp16 False
+
+# deepspeed 的相关配置
+# 全部参数配置可参考：https://www.deepspeed.ai/docs/config-json
+deepspeed:
+  enabled: True
+  config:
+    zero_optimization:
+      stage: 2                               # [0|1|2|3] 分别代表禁用、对 optimizer 的参数切分、optimizer+梯度+模型参数切分
+      allgather_partitions: true             # [true|false] 选择是否 allgather collective or a series of broadcast collectives
+      allgather_bucket_size: 1.0e+8          # [integer] Number of elements allgathered at a time
+      overlap_comm: true                     # [true|false] Attempts to overlap the reduction of the gradients with backward computation
+      reduce_scatter: true                   # [true|false] Uses reduce or reduce scatter instead of allreduce to average gradients
+      reduce_bucket_size: 1.0e+8             # [integer] Number of elements reduced/allreduced at a time
+      contiguous_gradients: true             # [true|false] Copies the gradients to a contiguous buffer as they are produced
+    bf16:
+      enabled: *bf16
+    fp16:
+      enabled: *fp16
+      loss_scale: 0                          # [float] loss 的 scale 值，0 代表动态 scaling
+      loss_scale_window: 100                 # [integer] the window over which to raise/lower the dynamic loss scale value
+      initial_scale_power: 16                # [integer] the power of the initial dynamic loss scale value，动态 scale 的值为 2^initial_scale_power
+      hysteresis: 2                          # [integer] the delay shift in dynamic loss scaling
+      min_loss_scale: 1.0e-10                # [integer] the minimum dynamic loss scale value
+    steps_per_print: 2000                    # [integer] Print progress report every N training steps
+    gradient_clipping: 1.0                   # [float] Enable gradient clipping with value
+    wall_clock_breakdown: False              # [true|false] Enable timing of the latency of forward/backward/update training phases
+    zero_allow_untested_optimizer: true      # [true|false] Allow untested optimizers to be used with ZeRO
+    train_micro_batch_size_per_gpu: "auto"   # [integer] Batch size to be processed by one GPU in one step (without gradient accumulation)
+    train_batch_size: "auto"                 # [integer] The effective training batch size
+    gradient_accumulation_steps: *gas        # [integer] Number of training steps to accumulate gradients before averaging and applying them. 
+
+# tokenizer 相关配置
+tokenizer:
+  type: LlamaTokenizer
+  kwargs:
+    tokenizer_name_or_path: &file_path /mnt/cache/share_data/zhangyunchen/llama_converted_2023031601/7B/llama-7b
+    bos_token: "<s>"
+    eos_token: "</s>"
+    unk_token: "<unk>"
+    use_auth_token: False
+
+# tokenization 主要用于数据的组织、label 的处理及转为 token
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 2048            # 输入的最大长度
+    ignore_index: -100                                # 忽略的 index
+    parser_type: simple_chat                         # [base|simple_chat|sense_chat|simple_chat|...] 处理的类型
+    parser_kwargs:                                    # parser 的相关参数
+      keep_all_keys: False
+      inference_mode: False
+  
+data:
+  data_types: [train]
+  train:
+    dataset:
+      type: base_nlp_json                             # [base_nlp_json|mmap_json|mmap_index_json]
+      kwargs:
+        json_file: /path/to/data.jsonl
+        transformer: [*tokenization]                  # 数据需要做的处理
+        json_type: line                               # [all|line] 设置规则可参照README.md
+    batch_collector:
+      type: batch_align                               # [batch_align|batch|reward_batch|...]
+      kwargs:
+        alignment: 1                                  # align 的 size 为 math.ceil(max_size / float(alignment)) * alignment
+        max_seq_length: *train_seq_length             # 训练的最大长度
+    batch_sampler:
+      type: base
+      kwargs:
+        sampler:
+          type: dist
+        batch_size: 4
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 4
+        pin_memory: True
+        seed: *seed
+
+trainer:
+  train_iters: &train_iters 2000
+  optimizer:
+    type: AdamW
+    kwargs:
+      lr: 2.e-5
+      weight_decay: 0
+      betas: [0.9, 0.95]
+      eps: 1.e-8
+  lr_scheduler:
+    type: hf_cosine
+    kwargs:
+      warmup_steps: 200
+      training_steps: *train_iters
+
+saver:
+  enabled: False
+  save_interval: 500                               # 每 500 iter 保存一次
+  save_path: checkpoints/hf
+  save_mode: deepspeed                             # [deepspeed|huggingface] 模型保存类型
+  save_optim: True                                 # 是否保存 optimizer
+  save_rng_state: True                             # 是否保存 rng state
+
+
+loader:
+  enabled: False
+  load_path: checkpoints/hf/checkpoint-500
+  load_mode: deepspeed                             # [deepspeed|huggingface]
+  load_optim: True
+  load_rng_state: True
+
+
+hooks:
+  - type: hf_train_val_logger
+    kwargs:
+      log_interval: 10                             # 打印日志 iter
+      tensorboard: False
+  - type: dynamic_checkpoint
+    kwargs:
+        enable: False                              # 是否进行动态 checkpoint
+        debug_freq: 10
+        strategy:
+          type: predefine                          # 根据 token 长度来进行设置 checkpoint module 的总数量
+          kwargs:
+            size_map:
+              512: 0 
+              1024: 16
+              2048: 16
+
+
+model:
+  type: LlamaForCausalLM
+  kwargs:
+    model_name_or_path: *file_path
+    torch_dtype: bfloat16                           # [auto|bfloat16|float16|float32] 
+    trust_remote_code: True
