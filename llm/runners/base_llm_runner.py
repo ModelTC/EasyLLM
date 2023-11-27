@@ -152,7 +152,6 @@ class BaseRunner(object):
                                      enabled=(zero_stage == 3), mpu=dist_env):
                 model = build_model(self.tokenizer, self.config, self.lora_mode,
                                     self.cfg_lora, base_type=self.base_type)
-                print(model)
                 # set trainable params
                 if hasattr(model, 'set_train_params'):
                     model.set_train_params(model, lora_mode=self.lora_mode,
@@ -415,8 +414,6 @@ def main():
     runtime_none_keys = ['seed', 'local_rank', 'tensor_model_parallel_size',
                          'pipeline_model_parallel_size', 'distributed_backend']
     runtime_store_true_keys = ['fp16', 'bf16', 'deepspeed', 'lora_mode']
-    # if args.opts is not None:
-    #     cfg = merge_opts_into_cfg(args.opts, cfg)
     cfg['runtime'] = cfg.setdefault('runtime', {})
     for key in (runtime_none_keys + runtime_store_true_keys):
         val = getattr(args, key)
@@ -425,6 +422,10 @@ def main():
         elif key in runtime_store_true_keys and val is True:
             cfg['runtime'].update({key: val})
     if args.inference:
+        # sequence_parallel is not supported in inference
+        if 'kwargs' in cfg['model']:
+            if 'sequence_parallel' in cfg['model']['kwargs']:
+                cfg['model']['kwargs']['sequence_parallel'] = False
         runner = BaseRunner(args, cfg, training=False, base_type='infer')
         if cfg['runtime'].get('infer_model', False):
             runner.infer_model()
