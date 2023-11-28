@@ -4,7 +4,7 @@ import torch
 
 class RotaryEmbedding(torch.nn.Module):
 
-    def __init__(self, dim, base=10000, precision=torch.half):
+    def __init__(self, dim, base=10000, precision=torch.half, scale_factor=1.0):
         super().__init__()
         inv_freq = 1. / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer('inv_freq', inv_freq)
@@ -12,13 +12,14 @@ class RotaryEmbedding(torch.nn.Module):
         self.cos_cached = None
         self.sin_cached = None
         self.precision = precision
+        self.scale_factor = scale_factor
 
     def forward(self, x, seq_dim=1, seq_len=None):
         if seq_len is None:
             seq_len = x.shape[seq_dim]
         if self.max_seq_len_cached is None or (seq_len > self.max_seq_len_cached):
             self.max_seq_len_cached = seq_len
-            t = torch.arange(self.max_seq_len_cached, device=x.device, dtype=self.inv_freq.dtype)
+            t = torch.arange(self.max_seq_len_cached, device=x.device, dtype=self.inv_freq.dtype) * self.scale_factor
             freqs = torch.einsum('i,j->ij', t, self.inv_freq)
             # Different from paper, but it uses a different permutation in order to obtain the same calculation
             emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
