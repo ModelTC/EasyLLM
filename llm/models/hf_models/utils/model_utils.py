@@ -38,7 +38,7 @@ def get_model_cfg(cfg):
         hf_cfg._flash_attn_2_enabled = True
     if cfg.get("_flash_norm_2_enabled", True):
         hf_cfg._flash_norm_2_enabled = True
-    if cfg.get("_flash_rotary_2_enabled", True):
+    if cfg.get("_flash_rotary_2_enabled", False):
         hf_cfg._flash_rotary_2_enabled = True
     model_cfg = {
         "model_path": model_path,
