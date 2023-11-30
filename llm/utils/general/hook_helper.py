@@ -5,7 +5,6 @@ import weakref
 import torch
 import datetime
 from llm.utils.general.log_helper import default_logger as logger
-from llm.models.mg_models.base_modules.utils import calc_params_l2_norm
 from llm.utils.general.registry_factory import HOOK_REGISTRY
 from llm.utils.env import dist_env
 from llm.utils.model.ckpt_helper import save_checkpoint
@@ -125,8 +124,6 @@ class TrainValLoggerHook(Hook):
                 loss_scale = runner.optimizer.get_loss_scale().item()
 
         params_norm = None
-        if self.log_params_norm:
-            params_norm = calc_params_l2_norm(runner.model, self.bf16)
 
         data_parallel_size = dist_env.get_data_parallel_world_size()
 
