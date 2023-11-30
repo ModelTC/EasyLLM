@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
-import apex
 from .sophia import SophiaG
 
 
@@ -86,6 +85,7 @@ def build_optimizer(cfg_optim, model, deepspeed=True):
                 "Please install bitsandbytes from https://github.com/facebookresearch/bitsandbytes.")
         optimizer = build_cls_instance(bnb.optim, cfg_optim)
     elif cfg_optim['type'] in ['FusedAdam', 'FusedSGD', 'FusedNovoGrad']:
+        import apex
         optimizer = build_cls_instance(apex.optimizers, cfg_optim)
     elif cfg_optim['type'] in ['SophiaG']:
         optimizer = SophiaG(**cfg_optim['kwargs'])
