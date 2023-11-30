@@ -6,7 +6,7 @@ pytest==7.3.1
 accelerate==0.21.0
 sentencepiece==0.1.99
 pycryptodome==3.18.0
-tokenizers==0.13.3
+tokenizers==0.14.0
 peft==0.6.2
 transformers==4.34.0
 flash-attn==2.2.5
