@@ -168,10 +168,6 @@ lora:
     save_mode: deepspeed
 
 model:
-  type: llama_custom
+  type: llama2_7b
   kwargs:
-    num_layers: 32
-    hidden_size: 4096
-    num_attention_heads: 32
-    intermediate_size: 11008
-    num_kv_attention_heads: 32
+    use_flash_attn: True

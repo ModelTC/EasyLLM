@@ -153,9 +153,7 @@ hooks:
       tensorboard: True
   
 model:
-  type: llama_custom
+  type: llama_7b
   kwargs:
-    num_layers: 32
-    hidden_size: 4096
-    num_attention_heads: 32
+    use_flash_attn: True
 

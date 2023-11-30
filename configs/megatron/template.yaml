@@ -182,3 +182,8 @@ model:
     num_attention_heads: 32
     intermediate_size: 11008
     num_kv_attention_heads: 32
+# or
+# model:
+#   type: llama2_70b
+#   kwargs:
+#      use_flash_attn: True
