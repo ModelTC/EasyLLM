@@ -275,9 +275,10 @@ def save_lora_ckpt_pretrained(cfg_lora, model, iteration=None):
     dp_size = dist_env.get_data_parallel_world_size()
     num_layers = len(model.forward_funcs)
     config_name = cfg_lora['saver'].get('save_config_name', 'adapter_config.json')
-    peft_template = {"bias": "none", "enable_lora": None, "modules_to_save": [],
-                     "target_modules": [], "fan_in_fan_out": False, "inference_mode": True,
-                     "merge_weights": False, "peft_type": "LORA", "task_type": "CAUSAL_LM"}
+    peft_template = {"alpha_pattern": {}, "auto_mapping": None, "bias": "none", "modules_to_save": [],
+                     "init_lora_weights": True, "layers_pattern": None, "target_modules": [], "fan_in_fan_out": False, "inference_mode": True,
+                     "layers_to_transform": None, "peft_type": "LORA", "task_type": "CAUSAL_LM"}
+
     assert cfg_lora['saver'].get('save_mode', 'deepspeed') == 'deepspeed', 'only support deepspeed lora save mode now!'
 
     if model.checkpoint_parallel_write_pipeline:
@@ -325,6 +326,7 @@ def save_lora_ckpt_pretrained(cfg_lora, model, iteration=None):
             if ('word_embeddings' in cfg_lora['target_modules']) or ('lm_head' in cfg_lora['target_modules']):
                 raise NotImplementedError
             config['target_modules'].extend(cfg_lora['target_modules'])
+            config['base_model_name_or_path'] = cfg_lora['base_model_name_or_path']
             # save it
             with open(config_path, "w") as writer:
                 writer.write(json.dumps(config, indent=2, sort_keys=True))
