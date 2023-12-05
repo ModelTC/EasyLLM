@@ -23,6 +23,7 @@ model:
     trust_remote_code: True
   # if using lora
   peft_model_cfg:
+    peft_path: lora/model/path or None
     lora_rank: 8
     lora_alpha: 32
     target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]

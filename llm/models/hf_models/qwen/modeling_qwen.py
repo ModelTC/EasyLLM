@@ -298,8 +298,8 @@ class QWenAttention(nn.Module):
         self.cache_qmin = torch.tensor(torch.iinfo(torch.uint8).min, dtype=cache_dtype)
 
         if config.use_cache_quantization and config.use_cache_kernel:
-            from .cpp_kernels import cache_autogptq_cuda_256
             try:
+                from .cpp_kernels import cache_autogptq_cuda_256
                 self.cache_kernels = cache_autogptq_cuda_256
             except ImportError:
                 self.cache_kernels = None
