@@ -208,9 +208,6 @@ class BaseRunner(object):
     def load_checkpoint(self):
         # args = self.args
         torch.distributed.barrier()
-        # inference do not load optim and rng_state
-        self.config['loader']['load_optim'] = False
-        self.config['loader']['load_rng_state'] = False
         self.start_iteration, self.consumed_train_samples, \
             self.consumed_train_tokens = load_checkpoint(self.model, self.optimizer, self.num_microbatches_calculator,
                                                          self.config['loader'], self.lora_mode, self.cfg_lora)     # noqa
