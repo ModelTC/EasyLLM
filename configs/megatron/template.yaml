@@ -167,6 +167,7 @@ lora:
   lora_rank: 8
   lora_alpha: 32
   lora_dropout: 0.05
+  base_model_name_or_path: llama2-7b
   target_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'gate_proj', 'down_proj', 'up_proj']
   saver:
     modules_to_save: ['word_embeddings', 'lm_head']
