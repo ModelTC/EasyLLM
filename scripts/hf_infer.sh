@@ -2,7 +2,9 @@ set -x -e
 
 ROOT=../
 export PYTHONPATH=$ROOT:$ROOT/llm/utils/tools:$PYTHONPATH
-export PYTHONPATH=../../transformers/src:../../DeepSpeed:../../peft/src:$PYTHONPATH
+# Please export them, if you use ceph to load or save model
+export PYTHONPATH=path/to/DeepSpeed:$PYTHONPATH
+# export PYTHONPATH=path/to/transformers/src:path/to/peft/src:$PYTHONPATH
 
 export CMD=" python \
     $ROOT/llm/runners/hf_runner.py \

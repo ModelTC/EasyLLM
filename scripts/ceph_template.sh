@@ -6,6 +6,10 @@ T=`date +%m%d%H%M`
 
 ROOT=../
 export PYTHONPATH=$ROOT:$ROOT/llm/utils/tools:$PYTHONPATH
+
+# Please export them, if you use ceph to load or save model
+export PYTHONPATH=path/to/DeepSpeed:$PYTHONPATH
+# export PYTHONPATH=path/to/transformers/src:path/to/peft/src:$PYTHONPATH
 export PETRELPATH=your_petreloss.conf
 export CEPHBUCKET=s3://your_ceph_bucket
 

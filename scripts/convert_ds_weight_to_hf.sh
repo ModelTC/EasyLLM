@@ -2,7 +2,6 @@ set -x -e
 
 ROOT=../
 export PYTHONPATH=$ROOT:$ROOT/llm/utils/tools:$PYTHONPATH
-export PYTHONPATH=../../transformers/src:../../DeepSpeed:../../peft/src:$PYTHONPATH
 
 input_dir=$1
 output_dir=$2
