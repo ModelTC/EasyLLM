@@ -1,7 +1,7 @@
 import torch
-
-from llm.utils.general.registry_factory import PARSER_REGISTRY, AUGMENTATION_REGISTRY
+import json
 import copy
+from llm.utils.general.registry_factory import PARSER_REGISTRY, AUGMENTATION_REGISTRY
 
 
 class NLPCompose:
@@ -12,6 +12,112 @@ class NLPCompose:
         for t in self.transforms:
             data = t(data)
         return data
+
+
+@PARSER_REGISTRY.register('tools')
+class ToolParser(object):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 ignore_index=-100,
+                 keep_all_keys=False,
+                 inference_mode=False,
+                 drop_meta=False,
+                 prompt_template={}):
+        self.tokenizer = tokenizer
+        self.ignore_index = ignore_index
+        self.keep_all_keys = keep_all_keys
+        self.max_seq_length = max_seq_length
+        self.inference_mode = inference_mode
+        self.drop_meta = drop_meta
+        self.system_prompt = prompt_template.get('sytem_prompt', "<system>: ")
+        self.user_prompt = prompt_template.get('user_prompt', "<user>: ")
+        self.assistant_prompt = prompt_template.get("assistant_prompt", "<assistant>: ")
+        self.tool_calls_start = prompt_template.get('tool_calls_start', "<tool_calls_start>\n")
+        self.tool_calls_end = prompt_template.get('tool_calls_end', "<tool_calls_end>\n")
+        self.tool_response_prompt = prompt_template.get('tool_response_prompt', "<tool_response>:\n")
+        self.tool_define = prompt_template.get("tool_define", "<tools_define>:\n")
+
+    def __call__(self, meta):
+        if 'input' in meta:
+            messages = meta['input'].get('messages', [])
+            tools = meta['input'].get('tools', [])
+        elif "messages" in meta:
+            messages = meta['messages']
+            tools = meta['tools']
+        else:
+            messages = meta
+            tools = []
+        tokens = []
+        labels = []
+        system = ''
+        if len(tools) > 0:
+            system += self.tool_define
+        for tool in tools:
+            system += (json.dumps(tool['function']) + "\n")
+        tokenized_tool = self.tokenizer(system, return_attention_mask=False)['input_ids']
+        tokens.extend(tokenized_tool)
+        labels.extend([self.ignore_index] * len(tokenized_tool))
+
+        for item in messages:
+            if item['role'] == 'system':
+                system += f"{self.system_prompt}{item['content']}\n"
+                tokenized_system = self.tokenizer(system, return_attention_mask=False,
+                                                  add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_system)
+                labels.extend([self.ignore_index] * len(tokenized_system))
+            if item['role'] == 'user':
+                user_info = f"{self.user_prompt}{item['content']}\n"
+                tokenized_user = self.tokenizer(user_info, return_attention_mask=False,
+                                                add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_user)
+                labels.extend([self.ignore_index] * len(tokenized_user))
+            if item['role'] == 'assistant':
+                assis_info = ''
+                tokens_assistant_prompt = self.tokenizer(self.assistant_prompt, return_attention_mask=False,
+                                                         add_special_tokens=False)['input_ids']
+                tokens.extend(tokens_assistant_prompt)
+                labels.extend([self.ignore_index] * len(tokens_assistant_prompt))
+
+                if item['content']:
+                    assis_info += f"{item['content']}"
+                if 'tool_calls' in item and len(item['tool_calls']) > 0:
+                    assis_info += self.tool_calls_start
+                    for tool_call in item['tool_calls']:
+                        assis_info += json.dumps(tool_call['function']) + "\n"
+                    assis_info += self.tool_calls_end
+                tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False,
+                                                     add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_assistant)
+                labels.extend(copy.deepcopy(tokenized_assistant))
+                if not self.inference_mode:
+                    tokens += [self.tokenizer.eos_token_id]
+                    labels += [self.tokenizer.eos_token_id]
+
+            if item['role'] == 'tool':
+                response_info = f"{self.tool_response_prompt}{item['content']}"
+                tokenized_tool = self.tokenizer(response_info, return_attention_mask=False,
+                                                add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_tool)
+                labels.extend([self.ignore_index] * len(tokenized_tool))
+        if self.inference_mode:
+            infer_tokens_assistant_prompt = self.tokenizer(self.assistant_prompt, return_attention_mask=False,
+                                                           add_special_tokens=False)['input_ids']
+            tokens.extend(infer_tokens_assistant_prompt)
+            labels.extend([self.ignore_index] * len(infer_tokens_assistant_prompt))
+            return tokens, []
+        if self.keep_all_keys:
+            labels = copy.deepcopy(tokens)
+        else:
+            if self.drop_meta and len(tokens) > self.max_seq_length:
+                return None
+            # drop question to avoid no loss
+            tokens = tokens[-self.max_seq_length:]
+            labels = labels[-self.max_seq_length:]
+            input_ids = torch.LongTensor(tokens)
+            labels = torch.LongTensor(labels)
+            results = {'input_ids': input_ids, 'labels': labels}
+        return results
 
 
 @PARSER_REGISTRY.register('preprocess')
