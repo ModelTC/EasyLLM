@@ -32,7 +32,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 
-from ..utils.flash_utils import FlashRMSNorm, FlashAttention
+from llm.models.hf_models.utils.flash_utils import FlashRMSNorm, FlashAttention
 
 logger = logging.get_logger(__name__)
 

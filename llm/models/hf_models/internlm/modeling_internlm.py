@@ -36,7 +36,7 @@ from transformers.utils import add_start_docstrings, add_start_docstrings_to_mod
 from .configuration_internlm import InternLMConfig
 
 
-from ..utils.flash_utils import FlashRMSNorm, FlashAttention
+from llm.models.hf_models.utils.flash_utils import FlashRMSNorm, FlashAttention
 
 
 logger = logging.get_logger(__name__)
