@@ -42,16 +42,18 @@ def get_world_size_from_env():
 
 
 def get_rank(*args, **kwargs):
-    rank = get_rank_from_env()
-    if rank is not None:
-        return rank
+    if "LAUNCHER" not in os.environ:
+        rank = get_rank_from_env()
+        if rank is not None:
+            return rank
     return get_dist_rank(*args, **kwargs)
 
 
 def get_world_size(*args, **kwargs):
-    world_size = get_world_size_from_env()
-    if world_size is not None:
-        return world_size
+    if "LAUNCHER" not in os.environ:
+        world_size = get_world_size_from_env()
+        if world_size is not None:
+            return world_size
     return get_dist_world_size(*args, **kwargs)
 
 
@@ -317,6 +319,7 @@ def setup_distributed_mpi(backend='nccl',
 
 def setup_distributed(launcher='slurm', backend='nccl', port=13333):
     if launcher == 'torch':
+        os.environ['LAUNCHER'] = 'torch'
         setup_distributed_torch()
     elif launcher == 'slurm':
         setup_distributed_slurm(backend, port)
