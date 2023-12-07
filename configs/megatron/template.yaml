@@ -42,7 +42,7 @@ tokenization: &tokenization
     with_tokenizer: True
     max_seq_length: &train_seq_length 2048             # 输入的最大长度
     ignore_index: -100                                 # 忽略的 index
-    parser_type: simple_chat                          # [base|simple_chat|sense_chat|simple_chat|...] 处理的类型
+    parser_type: simple_chat                           # [base|simple_chat|sense_chat|simple_chat|...] 处理的类型
     parser_kwargs:                                     # parser 的相关参数
       keep_all_keys: False                             # [true|false] 训练时是否指定所有输入token参与训练
 

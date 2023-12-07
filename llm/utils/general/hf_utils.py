@@ -99,7 +99,12 @@ def save_ds_checkpoints(runner, save_cfg, global_step):
         state_dict['np_rng_state'] = np.random.get_state()
         state_dict['torch_rng_state'] = torch.get_rng_state()
         state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
-    runner.model.save_checkpoint(output_dir, tag=tag, client_state=state_dict)
+    runner.model.save_checkpoint(output_dir,
+                                 tag=tag,
+                                 client_state=state_dict,
+                                 save_base_state=save_cfg.get('save_base_state', True),
+                                 save_zero=save_cfg.get('save_zero', False),
+                                 save_optim=save_cfg.get('save_optim', False))
 
 
 def load_sharded_checkpoint(runner, folder):

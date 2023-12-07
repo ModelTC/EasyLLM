@@ -77,7 +77,7 @@ data:
       kwargs:
         sampler:
           type: dist
-        batch_size: 4
+        batch_size: 4                                 # 等于 train_micro_batch_size_per_gpu
     data_loader:
       type: base
       kwargs:
@@ -105,8 +105,8 @@ saver:
   save_interval: 500                               # 每 500 iter 保存一次
   save_path: checkpoints/hf
   save_mode: deepspeed                             # [deepspeed|huggingface] 模型保存类型
-  save_optim: True                                 # 是否保存 optimizer
-  save_rng_state: True                             # 是否保存 rng state
+  save_optim: True                                 # 是否保存 optimizer (针对 deepspeed 模式)
+  save_rng_state: True                             # 是否保存 rng state (针对 deepspeed 模式)
 
 
 loader:
