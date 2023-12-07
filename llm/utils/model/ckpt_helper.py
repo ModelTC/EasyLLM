@@ -182,9 +182,9 @@ def save_checkpoint(iteration, consumed_train_samples, consumed_train_tokens, mo
             assert save_tag != 'latest', "latest is the name reserved by deepspeed, you can save the latest with the name like latest_ckpt..."      # noqa
             try:
                 model.save_checkpoint(checkpoint_name, tag=save_tag, client_state=state_dict,
-                                      base_state_not_save=(not cfg_saver.get('save_base_state', True)),
-                                      zero_not_save=(not cfg_saver.get('save_zero', False)),
-                                      optim_not_save=(not cfg_saver.get('save_optim', False)))
+                                      save_base_state=cfg_saver.get('save_base_state', True),
+                                      save_zero=cfg_saver.get('save_zero', False),
+                                      save_optim=cfg_saver.get('save_optim', False))
             except TypeError:
                 # for low version of deepspeed
                 logger.warning('The version of deepspeed is not support the option of save_base_state, save_zero, and save_optim')      # noqa
