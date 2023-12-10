@@ -60,7 +60,7 @@ class ToolParser(object):
         labels.extend([self.ignore_index] * len(tokenized_tool))
 
         for item in messages:
-            if item['role'] == 'system':
+            if item['role'] == 'system' and item['content'] != '':
                 system += f"{self.system_prompt}{item['content']}\n"
                 tokenized_system = self.tokenizer(system, return_attention_mask=False,
                                                   add_special_tokens=False)['input_ids']
