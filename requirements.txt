@@ -20,3 +20,4 @@ tqdm==4.64.1
 # http://spring.sensetime.com/pypi/packages/flash_attn-2.2.5+cu116torch1.13cxx11abiFALSE-cp38-cp38-linux_x86_64.whl
 # http://spring.sensetime.com/pypi/packages/dropout_layer_norm-0.1-cp38-cp38-linux_x86_64.whl
 # http://spring.sensetime.com/pypi/packages/apex-0.1-cp38-cp38-linux_x86_64.whl
+# http://spring.sensetime.com/pypi/packages/fused_kernels-0.0.1-cp39-cp39-linux_x86_64.whl

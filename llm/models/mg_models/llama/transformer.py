@@ -498,6 +498,7 @@ class ParallelAttention(MegatronModule):
                     query_layer.transpose(0, 1),  # [b * np, sq, hn]
                     key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                     beta=beta, alpha=(1.0 / self.norm_factor))
+                value_layer = value_layer.reshape(sk, bs, nk_head, -1)
 
             # change view to [b, np, sq, sk]
             attention_scores = matmul_result.view(bs, nq_head, sq, sk)
