@@ -24,11 +24,9 @@ tokenizer:
   type: LlamaTokenizerFast
   kwargs:
     tokenizer_name_or_path: llama2-70b
-    tokenizer_kwargs: {
-      "bos_token": "<s>",
-      "eos_token": "</s>",
-      "unk_token": "<unk>"
-    }
+    bos_token: "<s>"
+    eos_token: "</s>"
+    unk_token: "<unk>"
   pad_vocab_size_to: 65632
   make_vocab_size_divisible_by: 8
 

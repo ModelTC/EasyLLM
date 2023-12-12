@@ -321,7 +321,8 @@ class MMapIndexJsonDataset(Dataset):
                  cache_splits=1,
                  cache_location_builder='py',
                  ignore_index=-100,
-                 cutoff_last_epoch=0.95):
+                 cutoff_last_epoch=0.95,
+                 with_cu_lens=False):
         super(MMapIndexJsonDataset, self).__init__()
         self.tokenizer = tokenizer
         # build transformer firstly.
@@ -374,6 +375,7 @@ class MMapIndexJsonDataset(Dataset):
         self.cache_location_builder = cache_location_builder
         self.sentenses_idx, self.location_idx, self.shuffle_idx = self.load_index_mappings(
             sentenses_id, self._index.sizes, total_samples, max_seq_length, seed, cutoff_last_epoch)
+        self.with_cu_lens = with_cu_lens
 
     def cache_log(self, log_str):
         if (self.cache_log_freq != -1):
@@ -574,6 +576,23 @@ class MMapIndexJsonDataset(Dataset):
         #    sample i --> [sample_idx[i], sample_idx[i+1])
         return self.location_idx.shape[0] - 1
 
+    def get_cu_seqlens(self, tokens):
+        # split by eos
+        cu_seqlens = (np.where(tokens == self.tokenizer.eos_token_id)[0] + 1).tolist()
+        if len(cu_seqlens) == 0:
+            cu_seqlens.append(len(tokens))
+        else:
+            if cu_seqlens[-1] != len(tokens):
+                cu_seqlens.append(len(tokens))
+        cu_seqlens.insert(0, 0)
+        return cu_seqlens
+
+    def get_position_ids(self, cu_seqlens):
+        position_ids = []
+        for i in range(1, len(cu_seqlens)):
+            position_ids.extend(list(range(cu_seqlens[i] - cu_seqlens[i - 1])))
+        return position_ids
+
     def __getitem__(self, idx):
         # Get the shuffled index.
         idx = self.shuffle_idx[idx]
@@ -601,6 +620,12 @@ class MMapIndexJsonDataset(Dataset):
         input_ids = torch.LongTensor(sample.tolist())
         labels = input_ids.clone()
         results = {'input_ids': input_ids, 'labels': labels}
+        if self.with_cu_lens:
+            cu_seqlens = self.get_cu_seqlens(sample)
+            position_ids = self.get_position_ids(cu_seqlens)
+            cu_seqlens = torch.LongTensor(cu_seqlens)
+            position_ids = torch.LongTensor(position_ids)
+            results.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
         return results
 
 

@@ -130,14 +130,15 @@ class BatchAlignCollector(BatchCollector):
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         item = tuple([instance[key] for instance in instances] for key in self.data_keys)  # noqa
         input_ids, labels = item[:2]
-        input_ids, labels = self._pad_func(input_ids, labels)
+        if self.pretrain:
+            cu_seqlens, position_ids = item[2:]
+            input_ids, labels, cu_seqlens, position_ids = self._pad_func(input_ids, labels, cu_seqlens, position_ids)
+        else:
+            input_ids, labels = self._pad_func(input_ids, labels)
         data = dict(input_ids=input_ids,
                     labels=labels,
                     attention_mask=input_ids.ne(self.pad_token_id))
         if self.pretrain:
-            cu_seqlens, position_ids = item[2:]
-            cu_seqlens = torch.stack(cu_seqlens)
-            position_ids = torch.stack(position_ids)
             data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
         return data
 
@@ -164,10 +165,22 @@ class BatchAlignCollector(BatchCollector):
             pad_inputs.append(pad_input)
         return torch.stack(pad_inputs)
 
-    def _pad_func(self, input_ids, labels):
+    def _pad_func(self, input_ids, labels, cu_seqlens=None, position_ids=None):
         input_ids = self._pad_with_alignment(input_ids, padding_value=self.pad_token_id)
         labels = self._pad_with_alignment(labels, padding_value=self.ignore_idx, is_label=True)
-        return input_ids, labels
+        if self.pretrain:
+            position_ids = self._pad_with_alignment(position_ids, padding_value=0)
+            flat_cu_seqlens = []
+            for bidx in range(len(cu_seqlens)):
+                ith_cu_seqlen = torch.clamp(cu_seqlens[bidx], max=self.max_seq_length)
+                if bidx == 0:
+                    flat_cu_seqlens.append(ith_cu_seqlen + bidx * self.max_seq_length)
+                else:
+                    flat_cu_seqlens.append((ith_cu_seqlen + bidx * self.max_seq_length)[1:])
+            cu_seqlens = torch.cat(flat_cu_seqlens)
+            return input_ids, labels, cu_seqlens, position_ids
+        else:
+            return input_ids, labels
 
 
 @dataclass

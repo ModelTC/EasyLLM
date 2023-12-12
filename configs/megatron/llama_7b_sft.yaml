@@ -24,7 +24,6 @@ tokenizer:
   type: LlamaTokenizer
   kwargs:
     tokenizer_name_or_path: llama-7b
-    tokenizer_kwargs: {}
   pad_vocab_size_to: 32000
   make_vocab_size_divisible_by: 8
 

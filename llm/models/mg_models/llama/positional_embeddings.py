@@ -51,6 +51,17 @@ def apply_rotary_pos_emb_torch(q, k, cos, sin, offset: int = 0, position_ids=Non
     if position_ids is None:
         cos, sin = cos[offset:q.shape[0] + offset, ...], sin[offset:q.shape[0] + offset, ...]
     else:
-        cos = cos[position_ids.view(-1)]
-        sin = sin[position_ids.view(-1)]
-    return (q * cos) + (rotate_half(q) * sin), (k * cos) + (rotate_half(k) * sin)
+        bs_len, sen_len = position_ids.shape
+        position_ids = position_ids.transpose(1, 0)
+        cos = cos[position_ids.reshape(-1)]
+        sin = sin[position_ids.reshape(-1)]
+        if bs_len > 1:
+            cos = cos.reshape(sen_len, bs_len, cos.shape[-2], cos.shape[-1])
+            sin = sin.reshape(sen_len, bs_len, sin.shape[-2], sin.shape[-1])
+            q = q.reshape(sen_len, bs_len, -1, q.shape[-1])
+            k = k.reshape(sen_len, bs_len, -1, k.shape[-1])
+    pos_emb_q, pos_emb_k = (q * cos) + (rotate_half(q) * sin), (k * cos) + (rotate_half(k) * sin)
+    if (position_ids is not None) and (bs_len > 1):
+        pos_emb_q = pos_emb_q.reshape(q.shape)
+        pos_emb_k = pos_emb_k.reshape(k.shape)
+    return pos_emb_q, pos_emb_k
