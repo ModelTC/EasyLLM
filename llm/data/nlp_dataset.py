@@ -13,8 +13,8 @@ import mmap
 from multiprocessing.pool import ThreadPool as Pool
 
 from .nlp_transforms import build_transformer
-from .data_utils import index_file_path, data_file_path, best_fitting_dtype, _warmup_mmap_file
-from .data_utils import MMapIndex, MMapIndexedDatasetBuilder, _num_tokens, _num_epochs
+from .data_utils import index_file_path, data_file_path, _warmup_mmap_file
+from .data_utils import MMapIndex, _num_tokens, _num_epochs, build_data_cache
 
 
 IGNORE_INDEX = -100
@@ -318,6 +318,7 @@ class MMapIndexJsonDataset(Dataset):
                  cache_worker=4,
                  cache_skip_warmup=True,
                  cache_log_freq=100,
+                 cache_splits=1,
                  cache_location_builder='py',
                  ignore_index=-100,
                  cutoff_last_epoch=0.95):
@@ -354,7 +355,7 @@ class MMapIndexJsonDataset(Dataset):
                 assert json_type == 'line', 'Only support line type json to build the cache .bin&.idx file'
                 if not isinstance(json_file, list):
                     json_file = [json_file]
-                self.build_data_cache(tokenizer, json_file)
+                build_data_cache(self.data_encode, tokenizer, json_file, self.cache_prefix, self.cache_worker, cache_splits=cache_splits)
         if torch.distributed.is_initialized():
             torch.distributed.barrier(group=dist_env.get_pipeline_model_parallel_group())
 
@@ -377,30 +378,6 @@ class MMapIndexJsonDataset(Dataset):
     def cache_log(self, log_str):
         if (self.cache_log_freq != -1):
             logger.info(log_str)
-
-    def build_data_cache(self, tokenizer, json_file):
-        total_build_items = 0
-        builders = MMapIndexedDatasetBuilder(self.cache_prefix + '.bin',
-                                             dtype=best_fitting_dtype(tokenizer.vocab_size))
-        for jsf in json_file:
-            self.cache_log('File {}: start processing'.format(jsf))
-            fin = open(jsf, 'r', encoding='utf-8')
-            with Pool(self.cache_worker) as p:
-                encoded_docs = p.imap(self.data_encode, fin, 25)
-                ith_build_items = 0
-                for meta in encoded_docs:
-                    input_ids = meta['input_ids'].int().cpu().numpy().tolist()
-                    if len(input_ids) == 0:
-                        continue
-                    builders.add_item(torch.IntTensor(input_ids))
-                    builders.end_document()
-                    total_build_items += 1
-                    ith_build_items += 1
-                    if (ith_build_items % self.cache_log_freq == 0):
-                        self.cache_log('File {}: {} items have been processed...'.format(jsf, ith_build_items))
-                self.cache_log('File {}: process done, {} items have been processed.'.format(jsf, ith_build_items))
-        builders.finalize(self.cache_prefix + '.idx')
-        self.cache_log('All Files Done! Total {} items have been processed.'.format(total_build_items))
 
     def data_encode(self, json_line):
         meta = json.loads(json_line)

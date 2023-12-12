@@ -1,7 +1,12 @@
 import struct
 import shutil
 import numpy as np
+import os
+import torch
+import tempfile
+from tqdm import tqdm
 from functools import lru_cache
+from multiprocessing.pool import ThreadPool as Pool
 
 from llm.utils.general.log_helper import default_logger as logger
 
@@ -250,3 +255,133 @@ class MMapIndexedDatasetBuilder(object):
 
         with MMapIndex.writer(index_file, self._dtype) as index:
             index.write(self._sizes, self._doc_idx)
+
+
+def split_list(lst, n):
+    """Splits the list lst into n approximately equal parts"""
+    k, m = divmod(len(lst), n)
+    return [
+        lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)
+    ]
+
+
+def build_data_cache(data_encode,
+                     tokenizer,
+                     json_file,
+                     cache_prefix,
+                     cache_worker=4,
+                     cache_splits=1,
+                     cache_indices=None):
+    """
+    Build the cache for the dataset.
+
+    If cache_splits > 1, the cache will be split into multiple sub-caches.
+    If cache_indices is not None, the cache will be built for the specified indices.
+
+    Args:
+        data_encode: a function that encodes the data into a dict of tensors
+        tokenizer: a tokenizer that encodes the data into a dict of tensors
+        json_file (list): a list of json files
+        cache_prefix (str): the prefix of the cache file
+        cache_worker (int): the number of workers for building the cache
+        cache_splits (int): the number of splits for building the cache
+        cache_indices (list): the indices of the splits to build the cache to manually build each sub-split. Default None
+    """
+    assert cache_splits >= 1
+    if cache_splits == 1:
+        _build_data_cache(data_encode, tokenizer, json_file, cache_prefix,
+                          cache_worker)
+    else:
+        if len(json_file) == 1:
+            # if only one file exist, cache_splits works on the lines of this file.
+            jsf = json_file[0]
+            with open(jsf, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                assert len(lines) >= cache_splits
+                lines_parts = split_list(lines, cache_splits)
+                assert len(lines_parts) == cache_splits
+                # Split the single file into multiple ones and save it to tempfiles
+                json_file = []
+                for lines_part in lines_parts:
+                    with tempfile.NamedTemporaryFile(
+                            mode='w+', delete=False) as temp_file:
+                        temp_file_name = temp_file.name
+                        temp_file.writelines(lines_part)
+                        temp_file.flush()  # Make sure data is written to disk
+                        json_file.append(temp_file_name)
+        # split the filenames into multiple sub-bins
+        total_files = len(json_file)
+        cache_splits = min(total_files, cache_splits)
+        parts = split_list(json_file, cache_splits)
+        for i, part in enumerate(parts):
+            if cache_indices is not None and i not in cache_indices:
+                continue
+            tmp_cache_prefix = cache_prefix + f'_{i}'
+            _build_data_cache(data_encode, tokenizer, part, tmp_cache_prefix,
+                              cache_worker)
+        if cache_indices is None:
+            # merge all the sub-bins into one. Only when cache_indices is not specified
+            builders = MMapIndexedDatasetBuilder(data_file_path(cache_prefix),
+                                                 dtype=best_fitting_dtype(
+                                                     tokenizer.vocab_size))
+            for i in range(len(parts)):
+                tmp_cache_prefix = cache_prefix + f'_{i}'
+                builders.merge_file_(tmp_cache_prefix)
+            builders.finalize(cache_prefix + '.idx')
+
+
+def _build_data_cache(data_encode,
+                      tokenizer,
+                      json_file,
+                      cache_prefix,
+                      cache_worker=4):
+    """
+    Build the cache for the json_file.
+
+    If cache_splits > 1, the cache will be split into multiple sub-caches.
+    If cache_indices is not None, the cache will be built for the specified indices.
+
+    Args:
+        data_encode: a function that encodes the data into a dict of tensors
+        tokenizer: a tokenizer that encodes the data into a dict of tensors
+        json_file (list): a list of json files
+        cache_prefix (str): the prefix of the cache file
+        cache_worker (int): the number of workers for building the cache
+    """
+    if (os.path.exists(data_file_path(cache_prefix))
+            and os.path.exists(index_file_path(cache_prefix))):
+        print(f'{cache_prefix} exists and skipped', flush=True)
+        return
+    if os.path.exists(data_file_path(cache_prefix)):
+        raise RuntimeError(
+            f'{cache_prefix}.bin already exists. Please manually remove it first'
+        )
+    total_build_items = 0
+    builders = MMapIndexedDatasetBuilder(data_file_path(cache_prefix),
+                                         dtype=best_fitting_dtype(
+                                             tokenizer.vocab_size))
+    for jsf in json_file:
+        print('File {}: start processing'.format(jsf), flush=True)
+        fin = open(jsf, 'r', encoding='utf-8')
+        # Count the total number of lines if not known
+        total_lines = sum(1 for _ in fin)
+        fin.seek(0)  # Reset file pointer to the beginning
+        with Pool(cache_worker) as p:
+            encoded_docs = p.imap(data_encode, fin, 25)
+            ith_build_items = 0
+            for meta in tqdm(encoded_docs, total=total_lines):
+                input_ids = meta['input_ids'].int().cpu().numpy().tolist()
+                if len(input_ids) == 0:
+                    continue
+                builders.add_item(torch.IntTensor(input_ids))
+                builders.end_document()
+                total_build_items += 1
+                ith_build_items += 1
+            print(
+                'File {}: process done, {} items have been processed.'.format(
+                    jsf, ith_build_items),
+                flush=True)
+    builders.finalize(cache_prefix + '.idx')
+    print('All Files Done! Total {} items have been processed.'.format(
+        total_build_items),
+        flush=True)

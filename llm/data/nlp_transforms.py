@@ -224,10 +224,12 @@ class BaseParser(object):
     def __init__(self,
                  tokenizer,
                  max_seq_length,
+                 split_paragraphs=False,
                  ignore_index=-100,
                  keep_all_keys=False,
                  inference_mode=False,
                  prompt_type="empty",
+                 content_key='text',
                  drop_meta=False):
         self.tokenizer = tokenizer
         self.ignore_index = ignore_index
@@ -237,6 +239,8 @@ class BaseParser(object):
         assert prompt_type in ["empty", "llama", "qwen", "intern", "baichuan2"], f"{prompt_type} has not supported."
         self.prompt_type = prompt_type
         self.drop_meta = drop_meta
+        self.content_key = content_key
+        self.split_paragraphs = split_paragraphs
 
     def build_input(self, raw_input_text):
         if self.prompt_type == "empty":
@@ -254,8 +258,24 @@ class BaseParser(object):
         return prompt
 
     def __call__(self, meta):
-        text = self.build_input(meta['text'])
-        tokenized_text = self.tokenizer(text, return_attention_mask=False)['input_ids']
+        if self.content_key not in meta:
+            raise ValueError(f"content_key {self.content_key} not in meta keys ({meta.keys()})")
+        text = self.build_input(meta[self.content_key])
+        if self.split_paragraphs:
+            # split text into paragraphs and tokenize each paragraph separately
+            # NOTE: The decoded text will have an additional whitespace at the beginning of each paragraph
+            split_text = text.split('\n\n')
+            tokenized_text = []
+            for i in range(len(split_text)):
+                add_special_tokens = (i == 0)  # only add special tokens for the first paragraph
+                tokenized_text_tmp = self.tokenizer(
+                    split_text[i] + '\n\n',
+                    return_attention_mask=False,
+                    add_special_tokens=add_special_tokens)['input_ids']
+                tokenized_text += tokenized_text_tmp
+        else:
+            tokenized_text = self.tokenizer(
+                text, return_attention_mask=False)['input_ids']
         if self.inference_mode:
             return tokenized_text, tokenized_text
         else:
