@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from llm.utils.env import dist_env
 from ..base_modules.modules.meg_module import MegatronModule
-from ..base_modules.modules.enums import AttnMaskType, LayerType, AttnType, PositionEmbeddingType
+from ..base_modules.modules.enums import AttnMaskType, AttnType, PositionEmbeddingType
 from ..base_modules.layers.fused_layer_norm import build_layer_norm
 from ..base_modules.layers.fused_softmax import FusedScaleMaskSoftmax
 from ..base_modules.utils import (attention_mask_func,
@@ -77,7 +77,7 @@ class FlashAttention(nn.Module):
         self.dropout_p = attention_dropout
         self.causal = causal
 
-    def forward(self, q, k, v, key_padding_mask=None):
+    def forward(self, q, k, v, key_padding_mask=None, cu_seqlens=None):
         """Implements the multihead softmax attention.
         Arguments
         ---------
@@ -94,7 +94,10 @@ class FlashAttention(nn.Module):
             k = rearrange(k, 'b s ... -> (b s) ...')
             v = rearrange(v, 'b s ... -> (b s) ...')
             max_s = seqlen
-            cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32, device=q.device)
+            if cu_seqlens is None:
+                cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32, device=q.device)
+            else:
+                cu_seqlens = cu_seqlens.view(-1).int()
             if k.shape[-2] == q.shape[-2]:
                 qkv = torch.stack([q, k, v], dim=1)
                 output = flash_attn_varlen_qkvpacked_func(
@@ -383,8 +386,14 @@ class ParallelAttention(MegatronModule):
         elif self.position_embedding_type == PositionEmbeddingType.flash:
             self.rotary_emb = FlashRotaryEmbedding(dim=self.hidden_size_per_attention_head)
 
-    def forward(self, hidden_states, attention_mask, layer_past=None,
-                get_key_value=False, alibi=None):
+    def forward(self,
+                hidden_states,
+                attention_mask,
+                cu_seqlens=None,
+                position_ids=None,
+                layer_past=None,
+                get_key_value=False,
+                alibi=None):
         # hidden_states: [sq, b, h]
         assert self.attention_type == AttnType.self_attn
         if self.sequence_parallel:
@@ -398,7 +407,6 @@ class ParallelAttention(MegatronModule):
         bs, sq, sk = query_layer.shape[1], query_layer.shape[0], key_layer.shape[0]
         nq_head = self.num_attention_heads_per_partition
         nk_head = self.num_kv_attention_heads_per_partition
-
         # Rotary embeddings
         if self.position_embedding_type == PositionEmbeddingType.rotary:
             # [sq, b, np, hn] -> [sq, b * np, hn]
@@ -413,7 +421,7 @@ class ParallelAttention(MegatronModule):
                 offset = layer_past[0].shape[0]
                 seq_len += offset
             cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
-            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset)
+            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset, position_ids=position_ids) # noqa
         elif self.position_embedding_type == PositionEmbeddingType.flash:
             query_layer = query_layer.reshape(sq, bs, nq_head, -1)
             key_layer = key_layer.reshape(sk, bs, nk_head, -1)
@@ -452,8 +460,10 @@ class ParallelAttention(MegatronModule):
                     qk_mask = attention_mask
                 else:
                     qk_mask = ~attention_mask[:, 0, :, 0]
+                if cu_seqlens is not None:
+                    qk_mask = None
             with dist_env.get_cuda_rng_tracker().fork():
-                context_layer = self.core_attention_flash(query_layer, key_layer, value_layer, qk_mask)
+                context_layer = self.core_attention_flash(query_layer, key_layer, value_layer, qk_mask, cu_seqlens)
             context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
         else:
             if self.use_matmul:
@@ -685,14 +695,6 @@ class ParallelTransformerLayer(MegatronModule):
         # Layernorm on the attention output
         self.post_attention_layernorm = build_layer_norm(layer_norm)
 
-        if self.layer_type == LayerType.decoder:
-            self.inter_attention = ParallelAttention(
-                attention_type=AttnType.cross_attn,
-                **default_parallel_attn_params
-            )
-            # Layernorm on the attention output.
-            self.post_inter_attention_layernorm = build_layer_norm(layer_norm)
-
         mlp_params = dict(
             init_method=get_initializer_from_cfg(initializer),
             output_layer_init_method=get_initializer_from_cfg(output_initializer),
@@ -722,9 +724,13 @@ class ParallelTransformerLayer(MegatronModule):
         else:
             self.alibi = None
 
-    def forward(self, hidden_states, attention_mask,
-                encoder_output=None, enc_dec_attn_mask=None,
-                layer_past=None, get_key_value=False):
+    def forward(self,
+                hidden_states,
+                attention_mask,
+                cu_seqlens=None,
+                position_ids=None,
+                layer_past=None,
+                get_key_value=False):
         # hidden_states: [s, b, h]
 
         # Layer norm at the beginning of the transformer layer.
@@ -733,6 +739,8 @@ class ParallelTransformerLayer(MegatronModule):
         attention_output, _ = \
             self.self_attn(layernorm_output,
                            attention_mask,
+                           cu_seqlens,
+                           position_ids,
                            layer_past=layer_past,
                            get_key_value=get_key_value,
                            alibi=self.alibi)
@@ -823,5 +831,8 @@ class ParallelTransformerLayerPipe(ParallelTransformerLayer):
             # Attention mask is an activation.
             hidden_states, attention_mask = inputs[0], inputs[1]
             return super().forward(*inputs, **kwargs), attention_mask
+        elif len(inputs) == 4:
+            hidden_states, attention_mask, cu_seqlens, position_ids = inputs[0], inputs[1], inputs[2], inputs[3]
+            return super().forward(*inputs, **kwargs), attention_mask, cu_seqlens, position_ids
         else:
             raise RuntimeError('Received more inputs than understood.')

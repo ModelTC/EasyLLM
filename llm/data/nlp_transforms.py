@@ -1,6 +1,7 @@
 import torch
 import json
 import copy
+import numpy as np
 from llm.utils.general.registry_factory import PARSER_REGISTRY, AUGMENTATION_REGISTRY
 
 
@@ -12,6 +13,63 @@ class NLPCompose:
         for t in self.transforms:
             data = t(data)
         return data
+
+
+@PARSER_REGISTRY.register('pretrain_bin')
+class PretrainBinParser(object):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 ignore_index=-100,
+                 keep_all_keys=False,
+                 inference_mode=False,
+                 drop_meta=False):
+        self.tokenizer = tokenizer
+        self.ignore_index = ignore_index
+        self.keep_all_keys = keep_all_keys
+        self.max_seq_length = max_seq_length
+        self.inference_mode = inference_mode
+        self.drop_meta = drop_meta
+        self.pad_token_id = len(tokenizer) - 1
+
+    def _pad_tokens(self, tokens):
+        pad_tokens = [self.pad_token_id] * self.max_seq_length
+        pad_tokens[:len(tokens)] = tokens
+        return pad_tokens
+
+    def get_cu_seqlens(self, tokens):
+        # split by eos
+        cu_seqlens = (np.where(tokens == self.tokenizer.eos_token_id)[0] + 1).tolist()
+        if len(cu_seqlens) == 0:
+            cu_seqlens.append(len(tokens))
+        else:
+            if cu_seqlens[-1] != len(tokens):
+                cu_seqlens.append(len(tokens))
+        cu_seqlens.insert(0, 0)
+        return cu_seqlens
+
+    def get_position_ids(self, cu_seqlens):
+        position_ids = []
+        for i in range(1, len(cu_seqlens)):
+            position_ids.extend(list(range(cu_seqlens[i] - cu_seqlens[i - 1])))
+        return position_ids
+
+    def __call__(self, meta):
+        path = meta['path']
+        bin_index = meta['bin_index']
+        start, end = bin_index[1], bin_index[2]
+        tokens = np.load(path)[start:end]
+        if len(tokens) < self.max_seq_length:
+            tokens = self._pad_tokens(tokens)
+        cu_seqlens = self.get_cu_seqlens(tokens)
+        position_ids = self.get_position_ids(cu_seqlens)
+        labels = np.copy(tokens)
+        input_ids = torch.LongTensor(tokens)
+        labels = torch.LongTensor(labels)
+        cu_seqlens = torch.LongTensor(cu_seqlens)
+        position_ids = torch.LongTensor(position_ids)
+        results = {'input_ids': input_ids, 'labels': labels, "cu_seqlens": cu_seqlens, "position_ids": position_ids}
+        return results
 
 
 @PARSER_REGISTRY.register('tools')

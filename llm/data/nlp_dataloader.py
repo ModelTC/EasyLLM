@@ -113,13 +113,33 @@ class BatchAlignCollector(BatchCollector):
                  ignore_idx=-100,
                  max_seq_length=2048,
                  offset_label=True,
-                 test_speed=False):
+                 test_speed=False,
+                 pretrain=False):
         super().__init__(tokenizer, ignore_idx)
         self.alignment = alignment
         self.max_seq_length = max_seq_length
         self.pad_token_id = len(self.tokenizer) - 1
         self.offset_label = offset_label
         self.test_speed = test_speed
+        self.pretrain = pretrain
+        if pretrain:
+            self.data_keys = ["input_ids", "labels", "cu_seqlens", "position_ids"]
+        else:
+            self.data_keys = ["input_ids", "labels"]
+
+    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        item = tuple([instance[key] for instance in instances] for key in self.data_keys)  # noqa
+        input_ids, labels = item[:2]
+        input_ids, labels = self._pad_func(input_ids, labels)
+        data = dict(input_ids=input_ids,
+                    labels=labels,
+                    attention_mask=input_ids.ne(self.pad_token_id))
+        if self.pretrain:
+            cu_seqlens, position_ids = item[2:]
+            cu_seqlens = torch.stack(cu_seqlens)
+            position_ids = torch.stack(position_ids)
+            data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
+        return data
 
     def _pad_with_alignment(self, input, padding_value=0, is_label=False):
         if self.test_speed:  # no padding for speed test

@@ -20,6 +20,116 @@ from .data_utils import MMapIndex, MMapIndexedDatasetBuilder, _num_tokens, _num_
 IGNORE_INDEX = -100
 
 
+@DATASET_REGISTRY.register('pretrain_bin')
+class PretrainBinDataset(Dataset):
+    def __init__(self,
+                 txt_files='',
+                 folders=None,
+                 tokenizer=None,
+                 transformer=None,
+                 bin_size=256 * 1024,
+                 seq_length=4096,
+                 data_root=''):
+        super(PretrainBinDataset, self).__init__()
+        if not isinstance(txt_files, list):
+            txt_files = [txt_files]
+        if folders is not None:
+            if not isinstance(folders, list):
+                folders = [folders]
+            txt_files = self.get_txt_files_from_folder(folders)
+        self.bin_paths = self.load_bin_paths(txt_files)
+        self.data_root = data_root
+        self.index_buffer = self.get_index_buffer(bin_size, seq_length)
+        self.bin_indexs = self.build_bin_index(self.bin_paths, bin_size, seq_length)
+        if transformer is not None:
+            # add datset handler in transform kwargs in need of mosaic/mixup etc.
+            for trans in transformer:
+                if 'kwargs' in trans and trans['kwargs'].get('with_tokenizer', False):
+                    trans['kwargs']['tokenizer'] = tokenizer
+                    trans['kwargs'].pop('with_tokenizer')
+            self.transformer = build_transformer(transformer)
+        else:
+            self.transformer = None
+
+    def get_txt_files_from_folder(self, folders):
+        txt_files = []
+        for folder in folders:
+            for item in os.listdir(folder):
+                if 'txt' in item:
+                    txt_files.append(os.path.join(folder, item))
+        return txt_files
+
+    def load_bin_paths(self, txt_files):
+        bin_paths = []
+        for txt_file in txt_files:
+            with open(txt_file, "r") as f:
+                for line in f.readlines():
+                    bin_paths.append(line.strip())
+        return bin_paths
+
+    def get_index_buffer(self, bin_size, seq_length):
+        indexs = []
+        temp = list(range(0, bin_size + seq_length, seq_length))
+        for i in range(len(temp) - 1):
+            indexs.append([0, temp[i], temp[i + 1]])
+        indexs = np.array(indexs).astype(np.int32)
+        return indexs
+
+    def get_last_indexs(self, idx, size, seq_length):
+        index = []
+        num = size // seq_length + 1
+        for i in range(num):
+            index.append([idx, i * seq_length, (i + 1) * seq_length])
+        index = np.array(index).astype(np.int32)
+        return index
+
+    def build_bin_index(self, bin_paths, bin_size, seq_length):
+        bin_indexs = []
+        for idx, bin_path in enumerate(bin_paths):
+            base_name = os.path.basename(bin_path)
+            size = int(base_name.split('_')[0])
+            if size == bin_size:
+                indexs = np.copy(self.index_buffer)
+                for i in range(len(indexs)):
+                    indexs[i][0] = idx
+            else:
+                indexs = self.get_last_indexs(idx, size, seq_length)
+            bin_indexs.append(indexs)
+            if idx % 10000 == 0:
+                logger.info(f"building bin index {idx}")
+        bin_indexs = np.vstack(bin_indexs)
+        return bin_indexs
+
+    def get_meta(self, idx):
+        bin_index = self.bin_indexs[idx]
+        path = os.path.join(self.data_root, self.bin_paths[bin_index[0]])
+        meta = {
+            'path': path,
+            'bin_index': bin_index
+        }
+        if self.transformer is not None:
+            meta = self.transformer(meta)
+        return meta
+
+    def __getitem__(self, idx):
+        try:
+            meta = self.get_meta(idx)
+        except: # noqa
+            meta = None
+        while meta is None:
+            new_idx = random.randint(0, len(self.metas) - 1)
+            if idx == new_idx:
+                continue
+            meta = self.get_meta(new_idx)
+        return meta
+
+    def __len__(self):
+        """
+        Returns dataset length
+        """
+        return len(self.bin_indexs)
+
+
 @DATASET_REGISTRY.register('base_nlp_json')
 class BaseNLPJsonDataset(Dataset):
     def __init__(self,

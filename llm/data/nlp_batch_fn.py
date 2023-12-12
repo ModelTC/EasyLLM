@@ -171,19 +171,20 @@ class JsonBatchFunction(object):
 
 @BATCH_FN_REGISTRY.register('flash_batch_pipe')
 class FlashBatchFunction(object):
-    def __init__(self, tokenizer, reset_position_ids, reset_attention_mask,
-                 eod_mask_loss=True, prefix_indices=None, loss_on_targets_only=True):
+    def __init__(self,
+                 tokenizer,
+                 eod_mask_loss=True,
+                 pretrain=False):
         self.tokenizer = tokenizer
-        self.reset_position_ids = reset_position_ids
-        self.reset_attention_mask = reset_attention_mask
         self.eod_mask_loss = eod_mask_loss
-        self.prefix_indices = prefix_indices
-        self.loss_on_targets_only = loss_on_targets_only
         self.pad_token_id = len(self.tokenizer) - 1
+        self.pretrain = pretrain
 
     def __call__(self, data):
-        # Items and their type.
-        keys = ['labels', 'input_ids']
+        if self.pretrain:
+            keys = ['labels', 'input_ids', "cu_seqlens", 'position_ids']
+        else:
+            keys = ['labels', 'input_ids']
         datatype = torch.int64
         # Broadcast data.
         data_b = dist_env.broadcast_data(keys, data, datatype)
@@ -191,16 +192,17 @@ class FlashBatchFunction(object):
         labels = data_b['labels'].long()
         tokens = data_b['input_ids'].long()
         attention_mask = tokens.ne(self.pad_token_id)
-        _, seq_length = tokens.size()
-        loss_mask = torch.ones(tokens.size(), dtype=torch.float, device=tokens.device)
-        if self.eod_mask_loss:
-            loss_mask[tokens == self.pad_token_id] = 0.0
-        # Position ids.
-        position_ids = torch.arange(seq_length, dtype=torch.long,
-                                    device=tokens.device)
-        position_ids = position_ids.unsqueeze(0).expand_as(tokens)
-
-        return (tokens, position_ids, attention_mask), (labels, loss_mask)
+        loss_mask = attention_mask.clone()
+        if not self.pretrain:
+            _, seq_length = tokens.size()
+            position_ids = torch.arange(seq_length, dtype=torch.long,
+                                        device=tokens.device)
+            position_ids = position_ids.unsqueeze(0).expand_as(tokens)
+            return (tokens, position_ids, attention_mask), (labels, loss_mask)
+        else:
+            cu_seqlens = data_b['cu_seqlens']
+            position_ids = data_b['position_ids']
+            return (tokens, position_ids, attention_mask, cu_seqlens), (labels, loss_mask)
 
 
 @BATCH_FN_REGISTRY.register('mini_rlhf_json_batch_pipe')

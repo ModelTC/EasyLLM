@@ -122,6 +122,8 @@ class LlamaModelPipe(PipelineModule, MegatronModule):
         if dist_env.get_pipeline_model_parallel_rank() == 0:
             seq_len = forward_input[0].shape[1]
         else:
+            if isinstance(forward_input, tuple):
+                forward_input = forward_input[0]
             if self.sequence_parallel:
                 seq_len = forward_input.shape[0] * dist_env.get_tensor_model_parallel_world_size()
             else:
@@ -152,18 +154,18 @@ class LlamaModelPipe(PipelineModule, MegatronModule):
 
         specs.append(LayerSpec(EmbeddingPipe, **self.word_embedings_params))
 
-        if fp32_residual_connection:
-            if pretrain_causal_attention:
-                specs.append(lambda x: x.transpose(0, 1).contiguous().float())
+        def transpose(x):
+            if isinstance(x, tuple) or isinstance(x, list):
+                if fp32_residual_connection:
+                    return (x[0].transpose(0, 1).contiguous().float(), *x[1:])
+                else:
+                    return (x[0].transpose(0, 1).contiguous(), *x[1:])
             else:
-                # EmbeddingPipe returns attention mask as well
-                specs.append(lambda x: (x[0].transpose(0, 1).contiguous().float(), *x[1:]))
-        else:
-            if pretrain_causal_attention:
-                specs.append(lambda x: x.transpose(0, 1).contiguous())
-            else:
-                # EmbeddingPipe returns attention mask as well
-                specs.append(lambda x: (x[0].transpose(0, 1).contiguous(), *x[1:]))
+                if fp32_residual_connection:
+                    return x.transpose(0, 1).contiguous().float()
+                else:
+                    return x.transpose(0, 1).contiguous()
+        specs.append(transpose)
 
         for layer_idx in range(num_layers):
             self.transformer_layer_params.update({'layer_number': layer_idx})
@@ -171,7 +173,7 @@ class LlamaModelPipe(PipelineModule, MegatronModule):
 
         # Undo data format change
         def undo(x):
-            if not pretrain_causal_attention:
+            if isinstance(x, tuple) or isinstance(x, list):
                 x = x[0]
             return x.transpose(0, 1).contiguous()
         specs.append(undo)

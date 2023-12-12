@@ -60,41 +60,11 @@ class Embedding(MegatronModule):
         else:
             self.position_embeddings = None
 
-        # Token type embedding.
-        # Add this as an optional field that can be added through
-        # method call so we can load a pretrain model without
-        # token types and add them as needed.
-        self._tokentype_embeddings_key = 'tokentype_embeddings'
-        if self.num_tokentypes > 0:
-            self.tokentype_embeddings = torch.nn.Embedding(
-                self.num_tokentypes, self.hidden_size)
-            # Initialize the token-type embeddings.
-            self.init_method(self.tokentype_embeddings.weight)
-        else:
-            self.tokentype_embeddings = None
-
         self.sequence_parallel = sequence_parallel
         # Embeddings dropout
         self.embedding_dropout = torch.nn.Dropout(embedding_dropout_prob)
 
-    def add_tokentype_embeddings(self, num_tokentypes):
-        """Add token-type embedding. This function is provided so we can add
-        token-type embeddings in case the pretrained model does not have it.
-        This allows us to load the model normally and then add this embedding.
-        """
-        if self.tokentype_embeddings is not None:
-            raise Exception('tokentype embeddings is already initialized')
-        if torch.distributed.get_rank() == 0:
-            print('adding embedding for {} tokentypes'.format(num_tokentypes),
-                  flush=True)
-        self.num_tokentypes = num_tokentypes
-        self.tokentype_embeddings = self.torch.nn.Embedding(num_tokentypes,
-                                                            self.hidden_size)
-        # Initialize the token-type embeddings.
-        self.init_method(self.tokentype_embeddings.weight)
-
-    def forward(self, input_ids, position_ids, tokentype_ids=None):
-        # Embeddings.
+    def forward(self, input_ids, position_ids):
         words_embeddings = self.word_embeddings(input_ids)
         embeddings = words_embeddings
 
@@ -103,12 +73,6 @@ class Embedding(MegatronModule):
             embeddings = embeddings + self.position_embeddings(position_ids)
         else:
             assert self.position_embeddings is None
-
-        if tokentype_ids is not None:
-            assert self.tokentype_embeddings is not None
-            embeddings = embeddings + self.tokentype_embeddings(tokentype_ids)
-        else:
-            assert self.tokentype_embeddings is None
 
         # Dropout.
         if self.sequence_parallel:
@@ -194,25 +158,18 @@ class EmbeddingPipe(Embedding):
 
         input_ids = inputs[0]
         position_ids = inputs[1]
-        if self.pretrain_causal_attention:
-            attention_mask = None
-        else:
-            attention_mask = inputs[2]
+        attention_mask = inputs[2]
 
         if len(inputs) == 4:
-            tokentype_ids = inputs[3]
-        else:
-            tokentype_ids = None
+            cu_seqlens = inputs[3]
 
         embeddings = super().forward(input_ids,
-                                     position_ids,
-                                     tokentype_ids=tokentype_ids)
+                                     position_ids)
 
-        # If cmd args has attn_mask, we don't forward it as an activation.
-        if self.pretrain_causal_attention:
-            return embeddings
+        if len(inputs) == 4:
+            return embeddings, attention_mask, cu_seqlens, position_ids
         else:
-            return embeddings, attention_mask
+            return embeddings
 
     @property
     def word_embeddings_weight(self):
