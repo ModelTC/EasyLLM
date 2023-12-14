@@ -6,17 +6,14 @@ try:
     # flash_attn 2.2.5
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
-    from flash_attn.ops.rms_norm import rms_norm as flash_attn_rms_norm
 except ImportError:
-    # flash_attn 2.0.0
-    try:
-        from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
-        from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
-        from flash_attn.ops.rms_norm import rms_norm as flash_attn_rms_norm
-    except ImportError:
-        flash_attn_func, flash_attn_varlen_func = None, None
-        index_first_axis, pad_input, unpad_input = None, None, None
-        flash_attn_rms_norm = None
+    flash_attn_func, flash_attn_varlen_func = None, None
+    index_first_axis, pad_input, unpad_input = None, None, None
+
+try:
+    from flash_attn.ops.rms_norm import rms_norm as flash_attn_rms_norm
+except: # noqa
+    flash_attn_rms_norm = None
 
 from transformers.utils import logging
 try:
