@@ -1,9 +1,13 @@
 import math
+import time
+import itertools
 from typing import Dict, Sequence
 from dataclasses import dataclass
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data import _utils, IterDataPipe
+from torch.utils.data.dataloader import _SingleProcessDataLoaderIter, _MultiProcessingDataLoaderIter, _share_dist_seed
 
 from llm.utils.env import dist_env
 from llm.utils.general.registry_factory import BATCH_COLLECTOR_REGISTRY, DATALOADER_REGISTRY
@@ -209,6 +213,54 @@ class MiniRLHFBatchCollector(BatchAlignCollector):
         )
 
 
+# TODO: remove once torch no longer has segment errors in large worker numbers.
+class MultiProcessingDataLoaderIter(_MultiProcessingDataLoaderIter):
+    def __init__(self, loader):
+        super().__init__(loader)
+
+    def _reset(self, loader, first_iter=False):
+        self._sampler_iter = iter(self._index_sampler)
+        self._num_yielded = 0
+        self._IterableDataset_len_called = loader._IterableDataset_len_called
+        if isinstance(self._dataset, IterDataPipe):
+            self._shared_seed = _share_dist_seed(loader.generator, self._pg)
+            shared_rng = torch.Generator()
+            shared_rng.manual_seed(self._shared_seed)
+            self._dataset = torch.utils.data.graph_settings.apply_random_seed(self._dataset, shared_rng)
+        self._send_idx = 0  # idx of the next task to be sent to workers
+        self._rcvd_idx = 0  # idx of the next task to be returned in __next__
+        # information about data not yet yielded, i.e., tasks w/ indices in range [rcvd_idx, send_idx).
+        # map: task idx => - (worker_id,)        if data isn't fetched (outstanding)
+        #                  \ (worker_id, data)   if data is already fetched (out-of-order)
+        self._task_info = {}
+        self._tasks_outstanding = 0  # always equal to count(v for v in task_info.values() if len(v) == 1)
+        # A list of booleans representing whether each worker still has work to
+        # do, i.e., not having exhausted its iterable dataset object. It always
+        # contains all `True`s if not using an iterable-style dataset
+        # (i.e., if kind != Iterable).
+        # Not that this indicates that a worker still has work to do *for this epoch*.
+        # It does not mean that a worker is dead. In case of `_persistent_workers`,
+        # the worker will be reset to available in the next epoch.
+        self._workers_status = [True for i in range(self._num_workers)]
+        # Reset the worker queue cycle so it resumes next epoch at worker 0
+        self._worker_queue_idx_cycle = itertools.cycle(range(self._num_workers))
+        # We resume the prefetching in case it was enabled
+        if not first_iter:
+            for idx in range(self._num_workers):
+                self._index_queues[idx].put(_utils.worker._ResumeIteration(self._shared_seed))
+            resume_iteration_cnt = self._num_workers
+            while resume_iteration_cnt > 0:
+                return_idx, return_data = self._get_data()
+                if isinstance(return_idx, _utils.worker._ResumeIteration):
+                    assert return_data is None
+                    resume_iteration_cnt -= 1
+        # prime the prefetch loop
+        for _ in range(self._prefetch_factor * self._num_workers):
+            # waiting to avoid the segment falut.
+            time.sleep(0.01)
+            self._try_put_index()
+
+
 @DATALOADER_REGISTRY.register('base')
 class BaseDataLoader(DataLoader):
     def __init__(self,
@@ -227,6 +279,18 @@ class BaseDataLoader(DataLoader):
             dataset=dataset, batch_sampler=batch_sampler,
             num_workers=num_workers, generator=generator,
             collate_fn=batch_collator, pin_memory=pin_memory, **kwargs)
+
+    # TODO: remove once torch no longer has segment errors in large worker numbers.
+    def _get_iterator(self):
+        if self.num_workers < 4:
+            return super()._get_iterator()
+        else:
+            # hack code for dataloader segment fault.
+            if self.num_workers == 0:
+                return _SingleProcessDataLoaderIter(self)
+            else:
+                self.check_worker_number_rationality()
+                return MultiProcessingDataLoaderIter(self)
 
     def get_epoch_size(self):
         if isinstance(self.batch_sampler, InfiniteBatchSampler):
