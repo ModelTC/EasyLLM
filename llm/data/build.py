@@ -24,7 +24,7 @@ def build_data_iterator(tokenizer, cfg_data, consumed_train_samples, data_type):
     if cfg_data[data_type]['batch_sampler']['kwargs'].get('micro_batch_size', None) is not None:
         assert cfg_data[data_type]['batch_sampler']['kwargs']['micro_batch_size'] == cfg_data[data_type]['micro_batch_size']       # noqa
     else:
-        cfg_data[data_type]['batch_sampler']['kwargs']['micro_batch_size'] == cfg_data[data_type]['micro_batch_size']       # noqa
+        cfg_data[data_type]['batch_sampler']['kwargs']['micro_batch_size'] = cfg_data[data_type]['micro_batch_size']       # noqa
     # build data loader
     if dist_env.get_tensor_model_parallel_rank() == 0:
         dataloader = build_data_loader(cfg_data[data_type], tokenizer)
