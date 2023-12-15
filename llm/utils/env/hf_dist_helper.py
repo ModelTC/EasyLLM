@@ -254,6 +254,7 @@ def setup_distributed_torch():
     rank = get_rank()
     device = rank % torch.cuda.device_count()
     torch.cuda.set_device(device)
+    return device
 
 
 def setup_distributed_slurm(backend='nccl', port='13333'):
@@ -282,6 +283,7 @@ def setup_distributed_slurm(backend='nccl', port='13333'):
     device = rank % torch.cuda.device_count()
     os.environ['LOCAL_RANK'] = str(device)
     torch.cuda.set_device(device)
+    return device
 
 
 def setup_distributed_mpi(backend='nccl',
@@ -315,13 +317,15 @@ def setup_distributed_mpi(backend='nccl',
     device = rank % torch.cuda.device_count()
     os.environ['LOCAL_RANK'] = str(device)
     torch.cuda.set_device(device)
+    return device
 
 
 def setup_distributed(launcher='slurm', backend='nccl', port=13333):
     if launcher == 'torch':
         os.environ['LAUNCHER'] = 'torch'
-        setup_distributed_torch()
+        device = setup_distributed_torch()
     elif launcher == 'slurm':
-        setup_distributed_slurm(backend, port)
+        device = setup_distributed_slurm(backend, port)
     else:
-        setup_distributed_mpi()
+        device = setup_distributed_mpi(backend=backend, port=port)
+    return device

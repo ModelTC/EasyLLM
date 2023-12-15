@@ -117,13 +117,6 @@ def build_dataloader(cfg_data, dataset, batch_collator):
     return DATALOADER_REGISTRY.build(cfg_data['data_loader'])
 
 
-def build_tokenizer(tokenizer_cfg):
-    type = tokenizer_cfg['type']
-    tokenizer_name_or_path = tokenizer_cfg['kwargs'].pop('tokenizer_name_or_path')
-    tokenizer = TOKENIZER_REGISTRY[type].from_pretrained(tokenizer_name_or_path, **tokenizer_cfg['kwargs'])
-    return tokenizer
-
-
 def build_augmentation(cfg):
     if 'template' in cfg['kwargs']:
         cfg['kwargs'].pop('template')

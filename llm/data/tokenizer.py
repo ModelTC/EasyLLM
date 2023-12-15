@@ -3,9 +3,11 @@ from transformers import LlamaTokenizer
 from transformers import LlamaTokenizerFast
 from llm.utils.general.log_helper import default_logger as logger
 from llm.utils.general.registry_factory import TOKENIZER_REGISTRY
+import copy
 
 
-def build_tokenizer(cfg_tokenizer):
+def build_tokenizer(_cfg_tokenizer):
+    cfg_tokenizer = copy.deepcopy(_cfg_tokenizer)
     pad_vocab_size_to = cfg_tokenizer.pop('pad_vocab_size_to', None)
     type = cfg_tokenizer['type']
     tokenizer_name_or_path = cfg_tokenizer['kwargs'].pop('tokenizer_name_or_path')

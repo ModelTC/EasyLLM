@@ -8,6 +8,7 @@ from llm.utils.model.optimizer_helper import build_optimizer
 from llm.utils.model.lr_helper import build_learning_rate_scheduler
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
+from llm.data.tokenizer import build_tokenizer
 from llm.utils.env.hf_dist_helper import (
     setup_distributed,
     get_world_size
@@ -17,7 +18,6 @@ from llm.utils.general.hf_build_utils import (
     build_dataloader,
     build_dataset,
     build_model,
-    build_tokenizer,
     hack_model,
     build_augmentation
 )
