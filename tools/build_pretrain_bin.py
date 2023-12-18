@@ -97,8 +97,8 @@ def process(item):
             res = json.loads(line)
             if 'content' in res:
                 content = res['content']
-            if 'question' in res:
-                content = res['question']
+            else:
+                continue
             # jump empty content
             if len(content) == 0:
                 continue
