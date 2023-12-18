@@ -5,6 +5,7 @@ from llm.models.mg_models.base_modules.functions.cross_entropy import vocab_para
 from llm.utils.env import dist_env
 from llm.data.nlp_dataset import IGNORE_INDEX
 from llm.utils.general.registry_factory import LOSS_REGISTRY
+from llm.utils.general.log_helper import default_logger as logger
 
 
 @LOSS_REGISTRY.register('softmax_cross_entropy')
@@ -172,4 +173,112 @@ class MiniRLHFCrossEntropy(CrossEntropy):
         rlhf_loss = self.rlhf_loss(scores, rw_scores)
         sft_loss = self.sft_loss(logit_label, rw_scores, labels)
         loss = self.rlhf_weight * rlhf_loss + sft_loss
+        return loss
+
+
+@LOSS_REGISTRY.register('dpo_loss')
+class DPOLoss(CrossEntropy):
+    def __init__(self, rlhf_weight=1.0, length_penalty=1.0, sentense_pairs=2, beta=0.1, loss_fn='sigmoid', reference_free=False, **kwargs):
+        self.rlhf_weight = rlhf_weight
+        self.length_penalty = length_penalty
+        self.sentense_pairs = sentense_pairs
+        self.ignore_idx = -100
+        self.loss_fn = loss_fn
+        self.beta = beta
+        self.reference_free = reference_free
+        logger.warning_once("DPOLoss only support micro_batch_size set to 1 now.")
+        if sentense_pairs != 2:
+            logger.warning_once("DPOLoss only support sentense_pairs set to 2 now.")
+
+        super().__init__(**kwargs)  # support sft
+
+    def _get_batch_logps(
+        self,
+        logits: torch.FloatTensor,
+        labels: torch.LongTensor,
+        average_log_prob: bool = False,
+    ) -> torch.FloatTensor:
+        """Compute the log probabilities of the given labels under the given logits.
+
+        Args:
+            logits: Logits of the model (unnormalized).
+                - Shape: (batch_size, sequence_length, vocab_size)
+            labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored.
+                - Shape: (batch_size, sequence_length)
+            average_log_prob:
+                - If True, return the average log probability per (non-masked) token.
+                - Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+
+        Returns:
+            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+        """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+
+        loss_mask = labels != self.ignore_idx
+
+        # dummy token; we'll ignore the losses on these tokens later
+        labels[labels == self.ignore_idx] = 0
+
+        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)
+
+    def _sft_loss(self, output, labels, loss_mask):
+        losses = vocab_parallel_cross_entropy(output.contiguous().float(),
+                                              labels, self.cut_size)
+        expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
+
+        loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
+        return loss
+
+    def _loss(
+        self,
+        policy_chosen_logps,
+        policy_rejected_logps,
+        reference_chosen_logps,
+        reference_rejected_logps,
+    ):
+        pi_logratios = policy_chosen_logps - policy_rejected_logps
+        ref_logratios = reference_chosen_logps - reference_rejected_logps
+
+        if self.reference_free:
+            ref_logratios = 0
+
+        logits = pi_logratios - ref_logratios
+
+        if self.loss_fn == "sigmoid":
+            losses = -F.logsigmoid(self.beta * logits).sum()
+        elif self.loss_fn == "hinge":
+            losses = torch.relu(1 - self.beta * logits).sum()
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_fn}. Should be one of ['sigmoid', 'hinge']")
+
+        chosen_rewards = self.beta * (policy_chosen_logps - reference_chosen_logps).detach()
+        rejected_rewards = self.beta * (policy_rejected_logps - reference_rejected_logps).detach()
+
+        return losses, chosen_rewards, rejected_rewards
+
+    def __call__(self, output, labels):
+        labels, loss_mask, ref_logps = labels[0], labels[1], labels[2]
+
+        if ref_logps[0] > 1.:
+            assert len(ref_logps) == 2  # only support micro_bs=1
+            sft_loss = self._sft_loss(output, labels, loss_mask)
+            return sft_loss
+
+        output = dist_env.gather_from_tensor_model_parallel_region(output)
+
+        logps = self._get_batch_logps(output, labels)
+        logps = logps.reshape(-1, self.sentense_pairs)
+
+        ref_logps = ref_logps.reshape(-1, self.sentense_pairs)
+
+        plcy_yw_logps, plcy_yl_logps = logps[:, 0], logps[:, 1]
+        ref_yw_logps, ref_yl_logps = ref_logps[:, 0], ref_logps[:, 1]
+
+        loss, chosen_rewards, rejected_rewards = self._loss(plcy_yw_logps, plcy_yl_logps, ref_yw_logps, ref_yl_logps)
         return loss

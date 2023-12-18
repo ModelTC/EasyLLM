@@ -460,25 +460,26 @@ class GeneralChatParser(object):
         tokens_question, labels_question = self._get_question_tokens_labels(question)
         tokens_answer, labels_answer = self._get_answer_tokens_labels(answer)
 
+        # step1, clip history tokens from old to new
+        tokens = tokens_system + tokens_history + tokens_knowledge + tokens_question + tokens_answer
+        if len(tokens) > self.max_seq_length:
+            if self.drop_meta:
+                return None, None
+            outside_length = len(tokens) - (self.max_seq_length + 1)
+
+            tokens_history = tokens_history[outside_length:]
+            labels_history = labels_history[outside_length:]
+
         tokens = tokens_system + tokens_history + tokens_knowledge + tokens_question + tokens_answer
         if self.only_last_answer:
             labels = [self.ignore_index] * len(labels_system + labels_history + labels_knowledge + labels_question) + labels_answer  # noqa
         else:
             labels = labels_system + labels_history + labels_knowledge + labels_question + labels_answer
 
+        # step2, clip answer (When the history tokens is not enough to clip)
         if len(tokens) > self.max_seq_length:
-            if self.drop_meta:
-                return None, None
-            outside_length = len(tokens) - self.max_seq_length
-            # step1, clip history tokens from old to new
-            tokens_history = tokens_history[outside_length:]
-            labels_history = labels_history[outside_length:]
-            tokens = tokens_system + tokens_history + tokens_knowledge + tokens_question + tokens_answer
-            labels = labels_system + labels_history + labels_knowledge + labels_question + labels_answer
-            # step2, clip answer (When the history tokens is not enough to clip)
-            if len(tokens) > self.max_seq_length:
-                tokens = tokens[:self.max_seq_length]
-                labels = labels[:self.max_seq_length]
+            tokens = tokens[:self.max_seq_length]
+            labels = labels[:self.max_seq_length]
         return tokens, labels
 
     def __call__(self, meta):
@@ -494,6 +495,98 @@ class GeneralChatParser(object):
             labels = torch.LongTensor(labels)
         results = {'input_ids': input_ids, 'labels': labels}
         return results
+
+
+@PARSER_REGISTRY.register('combine_general_chat')
+class CombinedGeneralChatParser(GeneralChatParser):
+    """
+    args are consistent with GeneralChatParser
+    Combines the output of general_chat parsers in several conditions:
+        - default_parser: parameters given in the yaml config file
+        - last_answer_parser: only train last answer
+        - keep_all_parser: keeps all keys containing answers and questions
+    """
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 **kwargs):
+        # self.default_parser = GeneralChatParser(**kwargs)
+
+        super().__init__(tokenizer, max_seq_length, **kwargs)  # default parser is self
+
+        updated_kwargs = dict(kwargs)
+        updated_kwargs.update({'only_last_answer': True})
+        self.last_answer_parser = GeneralChatParser(tokenizer, max_seq_length, **updated_kwargs)
+
+        updated_kwargs.update({'only_last_answer': False, 'keep_all_keys': True})
+        self.keep_all_parser = GeneralChatParser(tokenizer, max_seq_length, **updated_kwargs)
+
+    def __call__(self, meta):
+        # meta type 1: [convs]
+        # meta type 2: {keep_all_keys: True, convs:[convs]}
+        # meta type 3: {only_last_answer: True, convs:[convs]}
+        if isinstance(meta, list):
+            return super().__call__(meta)
+        elif isinstance(meta, dict) and meta.get('keep_all_keys', False):
+            return self.keep_all_parser(meta["convs"])
+        elif isinstance(meta, dict) and meta.get('only_last_answer', False):
+            return self.last_answer_parser(meta["convs"])
+        else:
+            return super().__call__(meta)
+
+
+@PARSER_REGISTRY.register('combine_dpo_general_chat')
+class CombinedDPOSFTParser(CombinedGeneralChatParser):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 inference_mode=False,
+                 average_log_prob=False,
+                 **kwargs):
+        self.average_log_prob = average_log_prob
+        assert inference_mode is False, 'dpo_rlhf parser does not support model inference'
+        updated_kwargs = dict(kwargs)
+        updated_kwargs.update({'inference_mode': inference_mode})
+        super().__init__(tokenizer, max_seq_length, **kwargs)
+
+    def parse_sft_pairs(self, meta):
+        assert isinstance(meta['yw'], list) or isinstance(meta['yw'], dict)
+        yw_res = super().__call__(meta['yw'])
+        yl_res = super().__call__(meta['yl'])
+        yw_tokens, yw_labels = yw_res['input_ids'], yw_res['labels']
+        yl_tokens, yl_labels = yl_res['input_ids'], yl_res['labels']
+        results = {'input_ids': [yw_tokens, yl_tokens], 'labels': [yw_labels, yl_labels], 'scores': torch.FloatTensor([999999, 999999])}
+        return results
+
+    def parse_dpo_pairs(self, meta):
+        # DPO meta: {'yw':[convs], 'yl':[convs], 'yw_logp':[logp][1:], 'yl_logp':[logp][1:]}  only support one yw and one yl
+        assert isinstance(meta['yw'], list) and isinstance(meta['yl'], list)
+
+        yw_res = super().__call__({"convs": meta['yw'], "keep_all_keys": False, "only_last_answer": True})
+        yl_res = super().__call__({"convs": meta['yl'], "keep_all_keys": False, "only_last_answer": True})
+        yw_tokens, yw_labels = yw_res['input_ids'], yw_res['labels']
+        yl_tokens, yl_labels = yl_res['input_ids'], yl_res['labels']
+        yw_logp = torch.FloatTensor(meta['yw_logp'])
+        yl_logp = torch.FloatTensor(meta['yl_logp'])
+        yw_mask = yw_labels != self.ignore_index
+        yl_mask = yl_labels != self.ignore_index
+
+        if self.average_log_prob:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1) / yw_mask[1:].sum(-1)  # LLMs output the probobilities from the second token
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1) / yl_mask[1:].sum(-1)
+        else:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1)
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1)
+
+        results = {'input_ids': [yw_tokens, yl_tokens], 'labels': [yw_labels, yl_labels], 'scores': torch.FloatTensor([yw_score, yl_score])}
+        return results
+
+    def __call__(self, meta):
+        yw_logp = torch.FloatTensor(meta['yw_logp'])
+        if len(yw_logp) == 1 and yw_logp[0] >= 1:  # log prob>0 means it's sft data
+            return self.parse_sft_pairs(meta)
+        else:
+            return self.parse_dpo_pairs(meta)
 
 
 @PARSER_REGISTRY.register('simple_chat')

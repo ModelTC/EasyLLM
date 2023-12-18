@@ -37,6 +37,7 @@ def merge_opts_into_cfg(opts, cfg):
         cur_cfg = cfg
         # for hooks
         if '-' in key:
+            # if len(key.split('-'))!=2:
             key_p, key_s = key.split('-')
             k_module, k_type = key_p.split('.')
             cur_cfg = cur_cfg[k_module]

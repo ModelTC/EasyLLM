@@ -1,0 +1,179 @@
+runtime:
+  seed: &seed 42
+  tensor_model_parallel_size: 4
+  pipeline_model_parallel_size: 8
+  deepspeed: True
+  lora_mode: False
+  dynamic: True
+  bf16: &bf16 True
+  fp16: &fp16 False
+
+deepspeed:
+  config:
+    gradient_clipping: 1.0
+    zero_optimization:
+      stage: 0
+    bf16:
+      enabled: *bf16
+    fp16:
+      enabled: *fp16
+    steps_per_print: 2000
+    wall_clock_breakdown: False
+
+tokenizer:
+  type: LlamaTokenizerFast
+  kwargs:
+    tokenizer_name_or_path: llama2-70b
+    bos_token: "<s>"
+    eos_token: "</s>"
+    unk_token: "<unk>"
+  pad_vocab_size_to: 65632
+  make_vocab_size_divisible_by: 8
+
+
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    template: sense
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 2048
+    parser_type: combine_dpo_general_chat
+    parser_kwargs:
+       keep_all_keys: False
+       average_log_prob: False
+       only_last_answer: True
+       prompt_template:
+         knowledge_prompt: ""
+
+
+data:
+  data_types: [train, infer]
+  train:
+    seq_length: *train_seq_length
+    global_batch_size: &train_global_batch_size 256
+    micro_batch_size: &train_micro_batch_size 1
+    dataset:
+      type: base_nlp_json
+      kwargs:
+        json_file: your/json/path
+        transformer: [*tokenization]
+        json_type: line
+    batch_sampler:
+      type: megatron_pretrain_random
+      kwargs:
+        micro_batch_size: *train_micro_batch_size
+    batch_collector:
+      type: mini_rlhf_batch
+      kwargs:
+        alignment: 4
+        max_seq_length: *train_seq_length
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 2
+        pin_memory: True
+        seed: *seed
+    batch_pipe:
+      type: mini_rlhf_json_batch_pipe
+      kwargs:
+        reset_position_ids: False
+        reset_attention_mask: False
+        eod_mask_loss: True
+        loss_on_targets_only: True
+    # notice the batch_calculator only works at the training time
+    batch_calculator:
+      type: rampup_batch_size_num
+      kwargs:
+        start_batch_size: 128
+        batch_size_increment: 128
+        ramup_samples: 128
+        global_batch_size: *train_global_batch_size
+        micro_batch_size: *train_micro_batch_size
+  infer:
+    seq_length: &infer_seq_length 40
+    global_batch_size: &infer_global_batch_size 1
+    micro_batch_size: &infer_micro_batch_size 1
+    batch_pipe:
+      type: token_batch_pipe
+      kwargs:
+        reset_position_ids: False
+        reset_attention_mask: False
+        eod_mask_loss: False
+        loss_on_targets_only: False
+
+
+trainer:
+  #train_samples: 220000
+  train_iters: 10000
+  optimizer:
+    type: FusedAdam      # apex FusedAdam
+    kwargs:
+      lr: 2.e-5
+      weight_decay: 0
+      betas: [0.9, 0.95]
+      eps: 1.e-8
+  lr_scheduler:
+    type: iter_base_annealing
+    kwargs:
+      min_lr: 1.e-6
+      decay_style: cosine
+      lr_warmup_iters: 100
+      lr_decay_iters: 8000
+      use_checkpoint_lr_scheduler: False
+      override_lr_scheduler: False
+
+saver:
+  save_path: checkpoints/llama2_70b_sft
+  save_interval: 2000              # set save_interval to 0 to not save any ckpt.
+  save_mode: deepspeed
+  save_optim: True
+  save_rng_state: True
+  save_zero: True
+
+loader:
+  load_path: llama2_70b
+  load_mode: huggingface
+  load_optim: True
+  load_rng_state: True
+  load_zero: False
+  load_base_state: True
+  debug: False
+
+
+hooks:
+  - type: train_val_logger
+    kwargs:
+      log_interval: 1
+      report_memory_interval: 100
+      log_dir: tf_logs/llama2_70b
+
+lora:
+  lora_rank: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'gate_proj', 'down_proj', 'up_proj']
+  saver:
+    modules_to_save: ['word_embeddings', 'lm_head']
+    only_save_trainable: True
+    save_path: checkpoints/lora
+    save_mode: deepspeed
+
+model:
+  type: llama2_70b
+  kwargs:
+      use_flash_attn: True
+      sequence_parallel: True
+      pp_partition_method: parameters
+      dynamic_checkpoint:
+        enabled: True
+        size_map:
+            512: 0
+            1024: 0
+            2048: 0
+            4096: 0
+            8192: 0
+      loss_params:
+        type: dpo_loss
+        kwargs:
+          loss_fn: sigmoid # or hinge
+          beta: 0.1

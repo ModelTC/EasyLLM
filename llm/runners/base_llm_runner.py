@@ -1,9 +1,11 @@
 import sys
 import time
+import os
 
 import torch
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from tqdm import tqdm
+import json
 
 import deepspeed
 from llm.utils.env import dist_env
@@ -290,6 +292,8 @@ class BaseRunner(object):
                         self.model,
                         self.tokenizer,
                         force_eos_id=args.force_eos_id)
+                elif args.generate_mode == 'logp':
+                    self.infer_logp(args.logp_file)
                 elif args.generate_mode == "eval":
                     args.out_seq_length = self.config["infer_cfg"]["generation_cfg"].get("max_new_tokens", 100)
                     # build tokenization
@@ -355,39 +359,50 @@ class BaseRunner(object):
                 raise NotImplementedError
         sys.stdout.flush()
 
-    def infer_model(self):
+    def infer_logp(self, logp_file):
         data_type = 'infer'
-        assert data_type == self.base_type, 'Inference type! But the base type is {}'.format_map(self.base_type)
-        self.model.set_batch_fn(self.batch_pipe_func[data_type])
-        self.model.eval()
+        logger.warning_once("Warning: infer_logp() only support model_parallel, batch size 1 now.")
+        cfg = self.config
+        assert cfg['data']['infer']['global_batch_size'] == 1
+
         from llm.data.nlp_dataset import IGNORE_INDEX
+
+        assert not os.path.exists(logp_file), "{} already exist".format(logp_file)
+
+        data_size = len(self.data_iterators[data_type]) if self.data_iterators[data_type] is not None else -1
+        data_size_cuda = torch.cuda.LongTensor([data_size])
+        gather_data_size = dist_env.gather_from_tensor_model_parallel_region(data_size_cuda)
+        data_size = gather_data_size.cpu().max().item()
+        logger.info(f'Infer Logp! The dataset has {data_size} items.')
+        logger.warning_once("LLMs output the probobilities from the second token")
+
         with torch.no_grad():
-            if self.deepspeed:
-                res = []
-                for idx in range(len(self.data_iterators[data_type])):
-                    output = self.model.eval_batch(self.data_iterators[data_type], compute_loss=False,
-                                                   reduce_output=None, dynamic=True,
-                                                   sequence_parallel=self.model.sequence_parallel)
-                    output_tensor = output[0]
-                    output_labels = output[1][0]
-                    if dist_env.is_pipeline_last_stage():
-                        output_tensor = dist_env.gather_from_tensor_model_parallel_region(output_tensor)
-                        output_labels = dist_env.gather_from_tensor_model_parallel_region(output_labels)
-                    output_tensor = output_tensor[..., 0]
-                    bs = output_tensor.shape[0]
-                    for i in range(bs):
-                        answer_mask = (output_labels[i] != IGNORE_INDEX)
-                        score = output_tensor[i][answer_mask].mean()
-                        res.append(score.cuda())
-                res = torch.stack(res)
-                res = dist_env.data_gather(res, 0)
-                if dist_env.get_data_parallel_rank() == 0:
-                    res = self.reorder(res)
-                    with open("res.txt", "w") as f:
-                        for idx, score in enumerate(res):
-                            print(f"idx: {idx}, score_mean: {score}", file=f)
-            else:
-                raise NotImplementedError
+            res = []
+            for idx in tqdm(range(data_size)):
+                output = self.model.eval_batch(self.data_iterators[data_type],
+                                               compute_loss=False,
+                                               reduce_output=None,
+                                               dynamic=True,
+                                               sequence_parallel=self.model.sequence_parallel)
+                output_tensor = output[0]
+                output_labels = output[1][0]
+                if dist_env.is_pipeline_last_stage():
+                    output_tensor = dist_env.gather_from_tensor_model_parallel_region(output_tensor)
+                    # output_labels = dist_env.gather_from_tensor_model_parallel_region(output_labels)
+
+                bs = output_tensor.shape[0]
+                for i in range(bs):
+                    answer_mask = (output_labels[i] != IGNORE_INDEX)
+                    tensor = output_tensor[i][answer_mask]
+                    label = output_labels[i][answer_mask]
+                    per_token_logps = torch.gather(tensor.log_softmax(dim=-1), dim=1, index=label.unsqueeze(1)).squeeze(1)
+                    per_token_logps = per_token_logps.cpu().numpy()
+                    res.append(per_token_logps)
+            if dist_env.get_tensor_model_parallel_rank() == 0 and dist_env.get_data_parallel_rank() == 0:
+                with open(logp_file, "w") as wf:
+                    for idx, logps in enumerate(res):
+                        wf.write(json.dumps({"logp": logps.tolist()}) + '\n')
+                    logger.info(f'Successfully save logp to {logp_file}.')
 
     def reorder(self, res):
         '''
@@ -424,10 +439,7 @@ def main():
             if 'sequence_parallel' in cfg['model']['kwargs']:
                 cfg['model']['kwargs']['sequence_parallel'] = False
         runner = BaseRunner(args, cfg, training=False, base_type='infer')
-        if cfg['runtime'].get('infer_model', False):
-            runner.infer_model()
-        else:
-            runner.generate()
+        runner.generate()
     else:
         runner = BaseRunner(args, cfg, training=True, base_type='train')
         runner.train()

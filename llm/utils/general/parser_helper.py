@@ -68,6 +68,8 @@ def _add_inference_args(parser):
                        help='The log frequency in the generate interavtive mode.')
     group.add_argument('--generate-mode', type=str, default=None,
                        help='The sample generation mode.')
+    group.add_argument('--logp-file', type=str, default="logp.jsonl",
+                       help='logp file path saving logp results.')
     group.add_argument('--question-file', type=str, default=None,
                        help="Question file path.")
     group.add_argument('--sample-file', type=str, default="samples.jsonl",
