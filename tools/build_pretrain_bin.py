@@ -99,6 +99,9 @@ def process(item):
                 content = res['content']
             if 'question' in res:
                 content = res['question']
+            # jump empty content
+            if len(content) == 0:
+                continue
             split_texts = find_split_location(content, split_len)
             for idx, text in enumerate(split_texts):
                 if idx == 0:
@@ -108,6 +111,9 @@ def process(item):
                 if len(tokens) > 0:
                     if tokens[0] == space_id:
                         tokens = tokens[1:]
+                    # jump case that text == " "
+                    if len(tokens) == 0:
+                        continue
                     if text[-1] != ' ' and tokens[-1] == space_id:
                         tokens = tokens[:-1]
                 merge_tokens.extend(tokens)
