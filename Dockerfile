@@ -20,7 +20,8 @@ RUN pip install py-cpuinfo==9.0.0 \
         pandas==1.5.2 \
         einops==0.6.1 \
         sentencepiece==0.1.99 \
-        tiktoken==0.5.1
+        tiktoken==0.5.1 \
+        tensorboardX==2.5.1
 
 RUN pip install huggingface-hub==0.16.4 \
         peft==0.4.0 \
