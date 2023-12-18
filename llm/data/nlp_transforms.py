@@ -81,7 +81,9 @@ class ToolParser(object):
                  keep_all_keys=False,
                  inference_mode=False,
                  drop_meta=False,
-                 prompt_template={}):
+                 prompt_template={},
+                 use_system=True,
+                 use_knowledge=True):
         self.tokenizer = tokenizer
         self.ignore_index = ignore_index
         self.keep_all_keys = keep_all_keys
@@ -95,6 +97,9 @@ class ToolParser(object):
         self.tool_calls_end = prompt_template.get('tool_calls_end', "<tool_calls_end>\n")
         self.tool_response_prompt = prompt_template.get('tool_response_prompt', "<tool_response>:\n")
         self.tool_define = prompt_template.get("tool_define", "<tools_define>:\n")
+        self.knowledge_prompt = prompt_template.get('knowledge_prompt', "<knowledge>: ")
+        self.use_system = use_system
+        self.use_knowledge = use_knowledge
 
     def __call__(self, meta):
         if 'input' in meta:
@@ -118,18 +123,27 @@ class ToolParser(object):
         labels.extend([self.ignore_index] * len(tokenized_tool))
 
         for item in messages:
-            if item['role'] == 'system' and item['content'] != '':
-                system += f"{self.system_prompt}{item['content']}\n"
-                tokenized_system = self.tokenizer(system, return_attention_mask=False,
-                                                  add_special_tokens=False)['input_ids']
-                tokens.extend(tokenized_system)
-                labels.extend([self.ignore_index] * len(tokenized_system))
+            if self.use_system:
+                if item['role'] == 'system' and item['content'] != '':
+                    system += f"{self.system_prompt}{item['content']}\n"
+                    tokenized_system = self.tokenizer(system, return_attention_mask=False,
+                                                      add_special_tokens=False)['input_ids']
+                    tokens.extend(tokenized_system)
+                    labels.extend([self.ignore_index] * len(tokenized_system))
             if item['role'] == 'user':
                 user_info = f"{self.user_prompt}{item['content']}\n"
                 tokenized_user = self.tokenizer(user_info, return_attention_mask=False,
                                                 add_special_tokens=False)['input_ids']
                 tokens.extend(tokenized_user)
                 labels.extend([self.ignore_index] * len(tokenized_user))
+            if self.use_knowledge:
+                if item['role'] == 'knowledge':
+                    knowledge_info = f"{self.knowledge_prompt}{item['content']}\n"
+                    tokenized_knowledge = self.tokenizer(knowledge_info, return_attention_mask=False,
+                                                         add_special_tokens=False)['input_ids']
+                    tokens.extend(tokenized_knowledge)
+                    labels.extend([self.ignore_index] * len(tokenized_knowledge))
+
             if item['role'] == 'assistant':
                 assis_info = ''
                 tokens_assistant_prompt = self.tokenizer(self.assistant_prompt, return_attention_mask=False,
