@@ -180,6 +180,11 @@ def main():
         "--output_dir",
         help="Location to write HF model and tokenizer",
     )
+    parser.add_argument(
+        "--max_position_embeddings",
+        default=2048, type=int,
+        help="Max position embeddings",
+    )
     args = parser.parse_args()
 
     if args.lora_mode:
@@ -474,6 +479,7 @@ def write_model_fast(args):
             num_attention_heads=args.n_heads,
             num_hidden_layers=n_layer,
             rms_norm_eps=args.norm_eps,
+            max_position_embeddings=args.max_position_embeddings
         )
     else:
         config = LlamaConfig(
@@ -484,6 +490,7 @@ def write_model_fast(args):
             num_key_value_heads=args.num_key_value_heads,
             num_hidden_layers=n_layer,
             rms_norm_eps=args.norm_eps,
+            max_position_embeddings=args.max_position_embeddings
         )
 
     config.save_pretrained(model_path_dir)
