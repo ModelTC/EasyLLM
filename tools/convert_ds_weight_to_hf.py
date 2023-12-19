@@ -187,6 +187,11 @@ def main():
         "--output_dir",
         help="Location to write HF model and tokenizer",
     )
+    parser.add_argument(
+        "--max_position_embeddings",
+        default=2048, type=int,
+        help="Max position embeddings",
+    )
     args = parser.parse_args()
     write_model(args)
 
@@ -429,6 +434,7 @@ def write_model(args):
             num_attention_heads=args.n_heads,
             num_hidden_layers=n_layers,
             rms_norm_eps=args.norm_eps,
+            max_position_embeddings=args.max_position_embeddings
         )
     else:
         config = LlamaConfig(
@@ -439,6 +445,7 @@ def write_model(args):
             num_key_value_heads=args.num_key_value_heads,
             num_hidden_layers=n_layers,
             rms_norm_eps=args.norm_eps,
+            max_position_embeddings=args.max_position_embeddings
         )
     if "s3://" in tmp_model_path:
         config.save_pretrained(tmp_model_path[5:])
