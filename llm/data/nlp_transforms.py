@@ -83,7 +83,8 @@ class ToolParser(object):
                  drop_meta=False,
                  prompt_template={},
                  use_system=True,
-                 use_knowledge=True):
+                 use_knowledge=True,
+                 ensure_ascii=True):
         self.tokenizer = tokenizer
         self.ignore_index = ignore_index
         self.keep_all_keys = keep_all_keys
@@ -100,6 +101,7 @@ class ToolParser(object):
         self.knowledge_prompt = prompt_template.get('knowledge_prompt', "<knowledge>: ")
         self.use_system = use_system
         self.use_knowledge = use_knowledge
+        self.ensure_ascii = ensure_ascii
 
     def __call__(self, meta):
         if 'input' in meta:
@@ -117,7 +119,7 @@ class ToolParser(object):
         if len(tools) > 0:
             system += self.tool_define
         for tool in tools:
-            system += (json.dumps(tool['function']) + "\n")
+            system += (json.dumps(tool['function'], ensure_ascii=self.ensure_ascii) + "\n")
         tokenized_tool = self.tokenizer(system, return_attention_mask=False)['input_ids']
         tokens.extend(tokenized_tool)
         labels.extend([self.ignore_index] * len(tokenized_tool))
@@ -156,7 +158,7 @@ class ToolParser(object):
                 if 'tool_calls' in item and len(item['tool_calls']) > 0:
                     assis_info += self.tool_calls_start
                     for tool_call in item['tool_calls']:
-                        assis_info += json.dumps(tool_call['function']) + "\n"
+                        assis_info += json.dumps(tool_call['function'], ensure_ascii=self.ensure_ascii) + "\n"
                     assis_info += self.tool_calls_end
                 tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False,
                                                      add_special_tokens=False)['input_ids']
