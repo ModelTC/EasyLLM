@@ -31,6 +31,8 @@ def _get_fast_init(cls: Type[torch.nn.Module], device: torch.device):
 
     def _fast_init(self, *args, **kwargs):
         # Same as torch.nn.utils.skip_init, excluding checks
+        if "device" in kwargs:
+            kwargs.pop("device")
         _ORIGINAL_INITS[cls](self, *args, **kwargs, device="meta")
         self.to_empty(device=device)
 

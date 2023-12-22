@@ -321,3 +321,53 @@ def hf_inference(config, model, sense_tokenization, device, args):
                 save_results(result_file, all_samples, eval_task)
                 # evaluate
                 evaluate(result_file, eval_task)
+
+
+def hf_inference_multimodal(config, model, sense_tokenization, device, args):
+
+    def get_input_format(string):
+        _string = string.split('/img/')
+        input_format = []
+        for i in _string:
+            if '/img_end/' in i:
+                input_format.append({'image' : i.split('/img_end/')[0]})
+                if i.split('/img_end/')[1]:
+                    input_format.append({'text' : i.split('/img_end/')[1]})
+            else:
+                if i:
+                    input_format.append({'text' : i})
+        return input_format
+
+    generation_cfg = config["generation_cfg"]
+    tokenizer = sense_tokenization.parser.tokenizer
+    history_metas = []
+    with torch.no_grad():
+        if args.generate_mode == "interactive":
+            system_flag = False
+            while True:
+                logger.info(" 如果内容中包含图片路径，请在路径前后分别加入 /img/ 和 /img_end/, 示例如 /img/pathto/yourpic.jpeg/img_end/please describe the image")
+                logger.info("请输入问题，退出请输入 quit,")
+                raw_input_text = input()
+                input_meta = {}
+                if system_flag:
+                    input_meta['content'] = raw_input_text
+                    input_meta['role'] = "system"
+                    history_metas.append(input_meta)
+                    system_flag = False
+                    continue
+                if len(raw_input_text.strip()) == 0:
+                    break
+                if raw_input_text == 'quit':
+                    break
+                if raw_input_text == 'system':
+                    system_flag = True
+                    continue
+                if raw_input_text == "clean":
+                    history_metas = []
+                    continue
+                input_format = get_input_format(raw_input_text)
+                query = tokenizer.from_list_format(input_format)
+                response, history_metas = model.chat(tokenizer, query=query, history=history_metas, generation_cfg=generation_cfg)
+                logger.info(f"SenseChat: {response}")
+        elif args.generate_mode == "eval":
+            raise NotImplementedError("Not implementented for multimodal eval")

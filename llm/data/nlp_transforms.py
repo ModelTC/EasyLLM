@@ -839,6 +839,72 @@ class MiniRLHFParser(BaseParser):
         return results
 
 
+@PARSER_REGISTRY.register('QWen_Vl')
+class QWenVLParser(SimpleChatParser):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 ignore_index=-100,
+                 prompt_template={},
+                 inference_mode=False,
+                 only_last_answer=False,
+                 keep_all_keys=False,
+                 drop_meta=False):
+        super().__init__(tokenizer, max_seq_length, ignore_index, keep_all_keys, only_last_answer, prompt_template, inference_mode, drop_meta)
+        self.system_prompt = prompt_template.get('system_prompt', "You are a helpful assistant.")
+        self.nl_tokens = self.tokenizer('\n').input_ids
+        self.im_start = self.tokenizer.im_start_id
+        self.im_end = self.tokenizer.im_end_id
+
+    def _get_system_tokens_labels(self, system):
+        system = "<|im_start|>system\n" + system
+        tokens_system = self.tokenizer(system, return_attention_mask=False)['input_ids']
+        labels_system = [self.im_start] + [self.ignore_index] * (len(tokens_system) - 3) + [self.im_end] + self.nl_tokens
+        return tokens_system, labels_system
+
+    def _get_question_tokens_labels(self, question):
+        new_question = "{}{}{}".format(self.question_prompt, question, self.eoh)
+        tokens_question = self.tokenizer(new_question, return_attention_mask=False,
+                                         add_special_tokens=False)['input_ids']
+        labels_question = [self.im_start] + [self.ignore_index] * (len(tokens_question) - 3) + [self.im_end] + self.nl_tokens
+        return tokens_question, labels_question
+
+    def _get_history_tokens_labels(self, history):
+        tokens_history = []
+        labels_history = []
+        for idx, item in enumerate(history):
+            if item['role'] == "user":
+                token_user_context = self.tokenizer("<|im_start|>user").input_ids + self.nl_tokens + \
+                    self.tokenizer(item['content']).input_ids + [self.im_end] + self.nl_tokens
+                labels_user_context = [self.im_start] + [self.ignore_index] * (len(token_user_context) - 3) + [self.im_end] + self.nl_tokens
+                tokens_history += token_user_context
+                labels_history += labels_user_context
+            if item['role'] == "assistant":
+                token_assis_context = self.tokenizer("<|im_start|>assistant").input_ids + self.nl_tokens + \
+                    self.tokenizer(item['content']).input_ids + [self.im_end] + self.nl_tokens
+                labels_answer_prompt = [self.im_start] + [self.ignore_index] * len(self.tokenizer("<|im_start|>assistant").input_ids) + \
+                    token_assis_context[len(self.tokenizer("<|im_start|>assistant").input_ids) + 1:-2] + [self.im_end] + self.nl_tokens
+                if idx == 0:
+                    labels_answer_prompt = [self.ignore_index] * len(labels_answer_prompt)
+                tokens_history += token_assis_context
+                labels_history += labels_answer_prompt
+        return tokens_history, labels_history
+
+    def _get_answer_tokens_labels(self, answer):
+        answer_prompt_tokens = self.tokenizer(self.answer_prompt, return_attention_mask=False, add_special_tokens=False)['input_ids']
+        labels_answer_prompt = [self.im_start] + [self.ignore_index] * (len(answer_prompt_tokens))
+        if not self.inference_mode:
+            answer += self.eoa
+        tokens_answer = self.tokenizer(answer, return_attention_mask=False, add_special_tokens=False)['input_ids']
+        if not self.inference_mode:
+            tokens_answer = tokens_answer + [self.im_end] + self.nl_tokens
+        labels_answer = labels_answer_prompt + tokens_answer
+        tokens_answer = answer_prompt_tokens + tokens_answer
+        labels_answer = [self.im_start] + [self.ignore_index] * len(self.tokenizer("<|im_start|>assistant").input_ids) + \
+            tokens_answer[len(self.tokenizer("<|im_start|>assistant").input_ids) + 1:-2] + [self.im_end] + self.nl_tokens
+        return tokens_answer, labels_answer
+
+
 @AUGMENTATION_REGISTRY.register('sense_tokenization')
 class SenseTokenization(object):
     def __init__(self, tokenizer, max_seq_length, parser_type=None, parser_kwargs={}, ignore_index=-100):

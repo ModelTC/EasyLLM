@@ -23,6 +23,7 @@ from llm.utils.general.hf_build_utils import (
 )
 from llm.utils.general.hf_utils import (
     hf_inference,
+    hf_inference_multimodal,
     load_from_ds,
     load_from_hf,
     save_hf_checkpoint,
@@ -267,12 +268,21 @@ class HFRunner(object):
         self.config['infer_tokenization']['kwargs'].update({'tokenizer': self.tokenizer})
         sense_tokenization = build_augmentation(self.config["infer_tokenization"])
         sense_tokenization.parser.inference_mode = True
-
-        hf_inference(self.config["infer_cfg"],
-                     self.model,
-                     sense_tokenization,
-                     device,
-                     args=self.args)
+        model_type = self.config["infer_cfg"].get("model_type", "llm")
+        if model_type == "llm":
+            hf_inference(self.config["infer_cfg"],
+                         self.model,
+                         sense_tokenization,
+                         device,
+                         args=self.args)
+        elif model_type == "multimodal":
+            hf_inference_multimodal(self.config["infer_cfg"],
+                                    self.model,
+                                    sense_tokenization,
+                                    device,
+                                    args=self.args)
+        else:
+            raise NotImplementedError
 
     def save_checkpoint(self, save_cfg, global_step):
         if save_cfg.get('enabled', True):
