@@ -152,6 +152,7 @@ class DistributedSampler(Sampler):
         self.epoch = 0
         self.num_samples = int(math.ceil(self.dataset_size * 1.0 / self.num_replicas))
         self.total_size = self.num_samples * self.num_replicas
+        self.start_samples = 0
 
     def __iter__(self):
         # deterministically shuffle based on epoch
@@ -167,9 +168,15 @@ class DistributedSampler(Sampler):
         assert len(indices) == self.total_size
 
         # subsample
-        offset = self.num_samples * self.rank
-        indices = indices[offset:offset + self.num_samples]
-        assert len(indices) == self.num_samples
+        if self.start_samples > 0:
+            offset_start = self.num_samples * self.rank + self.start_samples % self.total_size
+            offset_end = self.num_samples * (self.rank + 1)
+            indices = indices[offset_start:offset_end]
+            self.start_samples = -1
+        else:
+            offset = self.num_samples * self.rank
+            indices = indices[offset:offset + self.num_samples]
+            assert len(indices) == self.num_samples
 
         return iter(indices)
 
@@ -179,11 +186,17 @@ class DistributedSampler(Sampler):
     def set_epoch(self, epoch):
         self.epoch = epoch
 
+    def set_start_samples(self, start_samples):
+        self.start_samples = start_samples
+
 
 @BATCH_SAMPLER_REGISTRY.register('base')
 class BaseBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last=False):
         super(BaseBatchSampler, self).__init__(sampler, batch_size, drop_last)
+
+    def set_consumed_samples(self, consumed_iter):
+        self.sampler.set_start_samples(consumed_iter * self.batch_size)
 
 
 class InfiniteBatchSampler(object):
@@ -202,6 +215,7 @@ class InfiniteBatchSampler(object):
 
         cur_iter = self.start_iter
         len_dataset = len(self.batch_sampler)
+
         while True:
             if hasattr(self.batch_sampler.sampler, 'set_epoch'):
                 self.batch_sampler.sampler.set_epoch(cur_iter // len_dataset)
@@ -214,6 +228,10 @@ class InfiniteBatchSampler(object):
 
     def set_start_iter(self, start_iter):
         self.start_iter = start_iter
+
+    def set_consumed_samples(self, consumed_iter):
+        self.batch_sampler.sampler.set_start_samples(consumed_iter * self.batch_size)
+        self.start_iter = consumed_iter
 
 
 def build_batch_sampler(cfg_batch_sample):

@@ -146,6 +146,9 @@ def load_from_ds(runner, load_cfg):
             resume_from_checkpoint, load_optimizer_states=load_optim, load_lr_scheduler_states=load_optim
         )
         runner.start_iter = state_dict['iteration']
+        if "train" in runner.data_loaders:
+            runner.data_loaders["train"].batch_sampler.set_consumed_samples(state_dict['iteration'])
+
         if load_path is None:
             raise ValueError(f"[deepspeed] failed to resume from checkpoint {resume_from_checkpoint}")
     else:
