@@ -142,9 +142,10 @@ def load_from_ds(runner, load_cfg):
     load_optim = load_cfg.get('load_optim', False)
     if len(deepspeed_checkpoint_dirs) > 0:
         # this magically updates self.optimizer and self.lr_scheduler
-        load_path, state_dict = runner.model.load_checkpoint(
-            resume_from_checkpoint, load_optimizer_states=load_optim, load_lr_scheduler_states=load_optim
-        )
+        load_path, state_dict = runner.model.load_checkpoint(resume_from_checkpoint,
+                                                             load_optimizer_states=load_optim,
+                                                             load_lr_scheduler_states=load_optim,
+                                                             load_zero=load_optim)
         runner.start_iter = state_dict['iteration']
         if "train" in runner.data_loaders:
             runner.data_loaders["train"].batch_sampler.set_consumed_samples(state_dict['iteration'])
