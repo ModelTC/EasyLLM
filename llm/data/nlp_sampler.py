@@ -158,7 +158,7 @@ class DistributedSampler(Sampler):
         # deterministically shuffle based on epoch
         g = torch.Generator()
         g.manual_seed(self.epoch)
-        indices = list(torch.randperm(self.dataset_size, generator=g))
+        indices = torch.randperm(self.dataset_size, generator=g).tolist()
 
         padding_size = self.total_size - len(indices)
         if padding_size <= len(indices):
