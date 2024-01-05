@@ -135,13 +135,16 @@ class BaseRunner(object):
             self.batch_pipe_func[data_type] = build_batch_pipe_fn(cfg_data[data_type]['batch_pipe'], self.tokenizer)
             if data_type == 'infer':
                 infer_type = cfg_data[data_type].get('infer_type', 'interactive')
-                # TODO, add file infer type
-                # assert infer_type == 'interactive', 'only support interactive inference now!'
                 if infer_type == 'interactive':
                     continue        # skip build data_iterators for inference mode
-            data_iterator, _ = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type)
-            # assert (is_train and (data_type == 'train')) or ((not is_train) and (data_type != 'train')), 'data type and data_iterator type do not match!'       # noqa
+            data_iterator, dataset_size = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type) # noqa
             self.data_iterators[data_type] = data_iterator
+
+        epoch = self.config['trainer'].get('epoch', -1)
+        if epoch > 0:
+            global_batch_size = self.num_microbatches_calculator.global_batch_size
+            train_iters = int((dataset_size.item() // global_batch_size + 1) * epoch)
+            self.set_train_iters(train_iters)
 
     def build_model(self):
         if self.deepspeed:
@@ -166,6 +169,11 @@ class BaseRunner(object):
         else:
             raise NotImplementedError
 
+    def set_train_iters(self, train_iters):
+        self.total_train_iters = get_train_iters(self.num_microbatches_calculator,
+                                                 train_iters,
+                                                 self.config['trainer'].get('train_samples', None))
+
     def build_trainer(self):
         unwrapped_model = unwrap_model(self.model, (torchDDP, Float16Module))
         if self.training:
@@ -182,9 +190,8 @@ class BaseRunner(object):
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         if self.training:
-            self.total_train_iters = get_train_iters(self.num_microbatches_calculator,
-                                                     self.config['trainer'].get('train_iters', None),
-                                                     self.config['trainer'].get('train_samples', None))
+            train_iters = self.config['trainer'].get('train_iters', None)
+            self.set_train_iters(train_iters)
 
     def deepspeed_init(self):
         # args = self.args
