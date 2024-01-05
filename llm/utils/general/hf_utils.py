@@ -94,6 +94,10 @@ def save_ds_checkpoints(runner, save_cfg, global_step):
     tag = f"global_step{global_step}"
     state_dict = {}
     state_dict['iteration'] = global_step
+    consumed_samples = runner.global_train_batch_size * global_step
+    state_dict['samples'] = consumed_samples
+    state_dict['world_size'] = get_world_size()
+
     if save_cfg.get('save_rng_state', False):
         state_dict['random_rng_state'] = random.getstate()
         state_dict['np_rng_state'] = np.random.get_state()
@@ -147,8 +151,10 @@ def load_from_ds(runner, load_cfg):
                                                              load_lr_scheduler_states=load_optim,
                                                              load_zero=load_optim)
         runner.start_iter = state_dict['iteration']
+        consumed_samples = state_dict['samples']
+        assert state_dict['world_size'] == get_world_size(), "resume from different ranks"
         if "train" in runner.data_loaders:
-            runner.data_loaders["train"].batch_sampler.set_consumed_samples(state_dict['iteration'])
+            runner.data_loaders["train"].batch_sampler.set_consumed_samples(consumed_samples)
 
         if load_path is None:
             raise ValueError(f"[deepspeed] failed to resume from checkpoint {resume_from_checkpoint}")

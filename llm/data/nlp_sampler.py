@@ -152,10 +152,16 @@ class DistributedSampler(Sampler):
         self.epoch = 0
         self.num_samples = int(math.ceil(self.dataset_size * 1.0 / self.num_replicas))
         self.total_size = self.num_samples * self.num_replicas
-        self.start_samples = 0
+        self.consumed_samples = 0
 
     def __iter__(self):
         # deterministically shuffle based on epoch
+        self.epoch = self.consumed_samples // self.total_size
+        start_samples = self.consumed_samples % self.total_size
+        if start_samples % self.num_replicas != 0:
+            self.consumed_samples -= start_samples % self.num_replicas
+            start_samples = (start_samples // self.num_replicas) * self.num_replicas
+
         g = torch.Generator()
         g.manual_seed(self.epoch)
         indices = torch.randperm(self.dataset_size, generator=g).tolist()
@@ -168,15 +174,10 @@ class DistributedSampler(Sampler):
         assert len(indices) == self.total_size
 
         # subsample
-        if self.start_samples > 0:
-            offset_start = self.num_samples * self.rank + self.start_samples % self.total_size
-            offset_end = self.num_samples * (self.rank + 1)
-            indices = indices[offset_start:offset_end]
-            self.start_samples = -1
-        else:
-            offset = self.num_samples * self.rank
-            indices = indices[offset:offset + self.num_samples]
-            assert len(indices) == self.num_samples
+        offset_start = self.num_samples * self.rank + start_samples // self.num_replicas
+        offset_end = self.num_samples * (self.rank + 1)
+        indices = indices[offset_start:offset_end]
+        assert len(indices) + start_samples // self.num_replicas == self.num_samples
 
         return iter(indices)
 
@@ -186,8 +187,8 @@ class DistributedSampler(Sampler):
     def set_epoch(self, epoch):
         self.epoch = epoch
 
-    def set_start_samples(self, start_samples):
-        self.start_samples = start_samples
+    def set_consumed_samples(self, consumed_samples):
+        self.consumed_samples = consumed_samples
 
 
 @BATCH_SAMPLER_REGISTRY.register('base')
@@ -195,8 +196,8 @@ class BaseBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last=False):
         super(BaseBatchSampler, self).__init__(sampler, batch_size, drop_last)
 
-    def set_consumed_samples(self, consumed_iter):
-        self.sampler.set_start_samples(consumed_iter * self.batch_size)
+    def set_consumed_samples(self, consumed_samples):
+        self.sampler.set_consumed_samples(consumed_samples)
 
 
 class InfiniteBatchSampler(object):
@@ -209,29 +210,24 @@ class InfiniteBatchSampler(object):
         """
         self.batch_sampler = batch_sampler
         self.batch_size = self.batch_sampler.batch_size
-        self.start_iter = start_iter
+        self.data_parallel_size = self.batch_sampler.sampler.num_replicas
+        self.consumed_samples = 0
 
     def __iter__(self):
-
-        cur_iter = self.start_iter
-        len_dataset = len(self.batch_sampler)
-
         while True:
-            if hasattr(self.batch_sampler.sampler, 'set_epoch'):
-                self.batch_sampler.sampler.set_epoch(cur_iter // len_dataset)
+            if hasattr(self.batch_sampler.sampler, "set_consumed_samples"):
+                self.batch_sampler.sampler.set_consumed_samples(self.consumed_samples)
+
             for batch in self.batch_sampler:
-                cur_iter += 1
+                self.consumed_samples += len(batch) * self.data_parallel_size
                 yield batch
 
     def __len__(self):
         return len(self.batch_sampler)
 
-    def set_start_iter(self, start_iter):
-        self.start_iter = start_iter
-
-    def set_consumed_samples(self, consumed_iter):
-        self.batch_sampler.sampler.set_start_samples(consumed_iter * self.batch_size)
-        self.start_iter = consumed_iter
+    def set_consumed_samples(self, consumed_samples):
+        self.batch_sampler.sampler.set_consumed_samples(consumed_samples)
+        self.consumed_samples = consumed_samples
 
 
 def build_batch_sampler(cfg_batch_sample):
