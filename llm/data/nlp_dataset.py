@@ -111,12 +111,19 @@ class PretrainBinDataset(Dataset):
             meta = self.transformer(meta)
         return meta
 
+    def set_seed(self, seed):
+        from llm.utils.env import dist_env
+        # reset seed for different PP stage
+        seed = seed + 3 * dist_env.get_data_parallel_rank()
+        random.seed(seed)
+
     def __getitem__(self, idx):
         try:
             meta = self.get_meta(idx)
         except: # noqa
             meta = None
         while meta is None:
+            self.set_seed(idx)
             new_idx = random.randint(0, len(self.metas) - 1)
             if idx == new_idx:
                 continue
@@ -156,6 +163,12 @@ class BaseNLPJsonDataset(Dataset):
         else:
             self.transformer = None
 
+    def set_seed(self, seed):
+        from llm.utils.env import dist_env
+        # reset seed for different PP stage
+        seed = seed + 3 * dist_env.get_data_parallel_rank()
+        random.seed(seed)
+
     def load_metas(self, json_files, json_type=['all']):
         metas = []
         for idx, json_file in enumerate(json_files):
@@ -180,6 +193,7 @@ class BaseNLPJsonDataset(Dataset):
     def __getitem__(self, idx):
         meta = self.get_meta(idx)
         while meta is None:
+            self.set_seed(idx)
             new_idx = random.randint(0, len(self.metas) - 1)
             if idx == new_idx:
                 continue
