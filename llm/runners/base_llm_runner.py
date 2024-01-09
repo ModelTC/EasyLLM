@@ -103,7 +103,7 @@ class BaseRunner(object):
                               cfg_runtime.get('log_level_replica', 'error'),
                               deepspeed=self.deepspeed)
         # Set random seed.
-        set_random_seed(cfg_runtime.get('seed', 42))
+        set_random_seed(cfg_runtime.get('seed', 42), cfg_runtime.get('dp_random_init', False))
         # get global start time
         global _TRAIN_START_TIME
         start_time_tensor = torch.cuda.FloatTensor([_TRAIN_START_TIME])

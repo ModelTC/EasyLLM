@@ -75,11 +75,13 @@ def set_logging_verbosity(rank, log_level='info', log_level_replica='error', dee
             set_verbosity_transformers(log_level_replica)
 
 
-def set_random_seed(seed_):
+def set_random_seed(seed_, dp_random_init=False):
     """Set random seed for reproducability."""
     if seed_ is not None and seed_ > 0:
         # Ensure that different pipeline MP stages get different seeds.
         seed = seed_ + (100 * dist_env.get_pipeline_model_parallel_rank())
+        if dp_random_init:
+            seed = seed + (3 * dist_env.get_data_parallel_rank())
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
