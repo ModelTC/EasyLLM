@@ -381,3 +381,18 @@ def hf_inference_multimodal(config, model, sense_tokenization, device, args):
                 logger.info(f"SenseChat: {response}")
         elif args.generate_mode == "eval":
             raise NotImplementedError("Not implementented for multimodal eval")
+
+
+def set_random_seed(seed_):
+    """Set random seed for reproducability."""
+    if seed_ is not None and seed_ > 0:
+        from llm.utils.env.hf_dist_helper import get_rank
+        # Ensure that different pipeline MP stages get different seeds.
+        seed = seed_ + (100 * get_rank())
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.device_count() > 0:
+            torch.cuda.manual_seed_all(seed)
+    else:
+        raise ValueError('Seed ({}) should be a positive integer.'.format(seed))

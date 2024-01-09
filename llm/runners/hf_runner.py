@@ -70,7 +70,12 @@ class HFRunner(object):
         if fp16:
             return torch.float16
 
+    def build_env(self):
+        from llm.utils.general.hf_utils import set_random_seed
+        set_random_seed(self.config['runtime'].get('seed', 42))
+
     def build(self):
+        self.build_env()
         self.build_tokenizer()
         self.build_model()
         self.build_hooks()
