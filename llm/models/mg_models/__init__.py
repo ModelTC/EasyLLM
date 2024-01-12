@@ -30,13 +30,10 @@ def build_model(tokenizer, cfg, lora_mode, cfg_lora, base_type):
     cfg_model = cfg['model']
     if 'kwargs' not in cfg_model:
         cfg_model['kwargs'] = {}
-    vocab_size = getattr(tokenizer, 'padded_vocab_size')
-    # if 'vocab_size' in cfg_model['kwargs']:
-    #     vocab_size = cfg_model['kwargs']['vocab_size']
     cfg_model['kwargs'].update({"fp16": cfg['runtime'].get('fp16', False),
                                 "bf16": cfg['runtime'].get('bf16', False),
                                 "unpad_vocab_size": getattr(tokenizer, 'vocab_size'),
-                                "vocab_size": vocab_size,
+                                "vocab_size": len(tokenizer),
                                 "micro_batch_size": cfg['data'][base_type]['micro_batch_size'],
                                 "seq_length": cfg['data'][base_type]['seq_length']})       # noqa
     model = MODULE_ZOO_REGISTRY.build(cfg_model)
