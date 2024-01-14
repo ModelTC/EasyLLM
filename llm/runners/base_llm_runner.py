@@ -52,10 +52,11 @@ class BaseRunner(object):
         self.build_tokenizer()
         self.build_hooks()
         self.build_model()
+        self.build_data_engine()
         self.build_trainer()
         self.deepspeed_init()
         self.load_checkpoint()
-        self.build_data_engine()
+        # self.build_data_engine()
 
     def set_param_components(self):
         self.start_iteration = 0
@@ -190,7 +191,9 @@ class BaseRunner(object):
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         if self.training:
-            train_iters = self.config['trainer'].get('train_iters', None)
+            train_iters = self.config['trainer'].get('train_iters', 100)
+            if self.config['trainer'].get('epoch', -1) > 0:
+                return
             self.set_train_iters(train_iters)
 
     def deepspeed_init(self):
