@@ -406,7 +406,7 @@ def get_global_rank():
 
 
 def initialize_distributed(rank, local_rank, world_size, tensor_model_parallel_size,
-                           pipeline_model_parallel_size, distributed_backend='nccl', is_slurm=False):
+                           pipeline_model_parallel_size, distributed_backend='nccl', launcher='torch'):
     """Initialize torch.distributed and mpu."""
 
     device_count = torch.cuda.device_count()
@@ -426,11 +426,12 @@ def initialize_distributed(rank, local_rank, world_size, tensor_model_parallel_s
                 local_rank = device
             torch.cuda.set_device(device)
         # Call the init process
-        if is_slurm:
+        if launcher == 'slurm':
             os.environ['LOCAL_RANK'] = str(local_rank)
             deepspeed.init_distributed(distributed_backend, auto_mpi_discovery=False)
         else:
             deepspeed.init_distributed(distributed_backend)
+
     assert rank == torch.distributed.get_rank()
     assert world_size == torch.distributed.get_world_size()
     # Set the tensor model-parallel, pipeline model-parallel, and
@@ -444,27 +445,43 @@ def initialize_distributed(rank, local_rank, world_size, tensor_model_parallel_s
                                       virtual_pipeline_model_parallel_size_=None)        # noqa
 
 
-def get_distributed_info(cfg_runtime, cfg_slurm={}):
-    if cfg_slurm.get('is_slurm', False):
-        # set slurm envs
-        proc_id = int(os.environ['SLURM_PROCID'])
-        ntasks = int(os.environ['SLURM_NTASKS'])
-        node_list = os.environ['SLURM_NODELIST']
-        if '[' in node_list:
-            beg = node_list.find('[')
-            pos1 = node_list.find('-', beg)
-            if pos1 < 0:
-                pos1 = 1000
-            pos2 = node_list.find(',', beg)
-            if pos2 < 0:
-                pos2 = 1000
-            node_list = node_list[:min(pos1, pos2)].replace('[', '')
-        addr = node_list[8:].replace('-', '.')
-        port = cfg_slurm.get('port', 13333)
+def set_slurm_dist_info(port):
+    proc_id = int(os.environ['SLURM_PROCID'])
+    ntasks = int(os.environ['SLURM_NTASKS'])
+    node_list = os.environ['SLURM_NODELIST']
+    if '[' in node_list:
+        beg = node_list.find('[')
+        pos1 = node_list.find('-', beg)
+        if pos1 < 0:
+            pos1 = 1000
+        pos2 = node_list.find(',', beg)
+        if pos2 < 0:
+            pos2 = 1000
+        node_list = node_list[:min(pos1, pos2)].replace('[', '')
+    addr = node_list[8:].replace('-', '.')
+    if 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = str(port)
-        os.environ['MASTER_ADDR'] = addr
-        os.environ['WORLD_SIZE'] = str(ntasks)
-        os.environ['RANK'] = str(proc_id)
+    os.environ['MASTER_ADDR'] = addr
+    os.environ['WORLD_SIZE'] = str(ntasks)
+    os.environ['RANK'] = str(proc_id)
+
+
+def set_mpi_dist_info(port):
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    world_size = comm.Get_size()
+    if 'MASTER_PORT' not in os.environ:
+        os.environ['MASTER_PORT'] = str(port)
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['RANK'] = str(rank)
+
+
+def get_distributed_info(cfg_runtime, launcher, port=13333):
+    if launcher == 'slurm':
+        set_slurm_dist_info(port)
+    if launcher == 'mpi':
+        set_mpi_dist_info(port)
 
     tensor_model_parallel_size = cfg_runtime.get('tensor_model_parallel_size', -1)
     pipeline_model_parallel_size = cfg_runtime.get('pipeline_model_parallel_size', -1)

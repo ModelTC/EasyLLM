@@ -56,7 +56,6 @@ class BaseRunner(object):
         self.build_trainer()
         self.deepspeed_init()
         self.load_checkpoint()
-        # self.build_data_engine()
 
     def set_param_components(self):
         self.start_iteration = 0
@@ -83,15 +82,14 @@ class BaseRunner(object):
 
     def build_env(self, rank=None, local_rank=None):
         cfg_runtime = self.config['runtime']
-        cfg_slurm = {'is_slurm': self.args.launcher == "slurm", 'port': self.args.port}
         # get env info
         rank, local_rank, world_size, tensor_model_parallel_size, \
-            pipeline_model_parallel_size = get_distributed_info(cfg_runtime, cfg_slurm=cfg_slurm)
+            pipeline_model_parallel_size = get_distributed_info(cfg_runtime, self.args.launcher, self.args.port)
         # initialize env
         # Pytorch distributed.
         initialize_distributed(rank, local_rank, world_size, tensor_model_parallel_size,
                                pipeline_model_parallel_size, cfg_runtime.get('distributed_backend', 'nccl'),
-                               is_slurm=(self.args.launcher == "slurm"))
+                               self.args.launcher)
         # Initialize deepspeed random and activation checkpointing.
         if self.deepspeed:
             num_layers, checkpoint_num_layers = get_layer_info(self.config['model'])
