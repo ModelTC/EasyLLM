@@ -52,10 +52,10 @@ class BaseRunner(object):
         self.build_tokenizer()
         self.build_hooks()
         self.build_model()
-        self.load_checkpoint()
-        self.build_data_engine()
         self.build_trainer()
         self.deepspeed_init()
+        self.load_checkpoint()
+        self.build_data_engine()
 
     def set_param_components(self):
         self.start_iteration = 0
@@ -138,11 +138,13 @@ class BaseRunner(object):
                     continue        # skip build data_iterators for inference mode
             data_iterator, dataset_size = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type) # noqa
             self.data_iterators[data_type] = data_iterator
-
-        epoch = self.config['trainer'].get('epoch', -1)
-        if epoch > 0:
-            global_batch_size = self.num_microbatches_calculator.global_batch_size
-            train_iters = int((dataset_size.item() // global_batch_size + 1) * epoch)
+        if self.training:
+            epoch = self.config['trainer'].get('epoch', -1)
+            if epoch > 0:
+                global_batch_size = self.num_microbatches_calculator.global_batch_size
+                train_iters = int((dataset_size.item() // global_batch_size + 1) * epoch)
+            else:
+                train_iters = self.config['trainer'].get('train_iters', 100)
             self.set_train_iters(train_iters)
 
     def build_model(self):
@@ -188,11 +190,6 @@ class BaseRunner(object):
             lr_scheduler = None
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
-        if self.training:
-            train_iters = self.config['trainer'].get('train_iters', 100)
-            if self.config['trainer'].get('epoch', -1) > 0:
-                return
-            self.set_train_iters(train_iters)
 
     def deepspeed_init(self):
         # args = self.args
