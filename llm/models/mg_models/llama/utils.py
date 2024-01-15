@@ -55,6 +55,95 @@ def get_fp32_params_from_key(key, model, num_layers, lora_mode=False):
         return None, None
 
 
+def internlm2_to_llama2(dt, model):
+    output_dt = {}
+    n_heads = model.transformer_layer_params['num_attention_heads']
+    n_kv_heads = model.transformer_layer_params['num_kv_attention_heads']
+    hid_size = model.transformer_layer_params['hidden_size']
+    num_layers = model.model_kwargs['num_layers']
+    gs = n_heads // n_kv_heads
+    head_dim = hid_size // n_heads
+    for key in dt.keys():
+        if 'tok_embeddings' in key:
+            output_dt['module.1.word_embeddings.weight'] = dt['model.tok_embeddings.weight']
+        elif 'model.norm.weight' in key:
+            output_dt[f'module.{num_layers + 4}.weight'] = dt[key]
+        elif 'output' in key:
+            output_dt[f'module.{num_layers + 5}.word_embeddings.weight'] = dt[key]
+        elif "layers" in key:
+            layer_id = int(key.split('.')[2])
+            if 'attention.wqkv' in key:
+                qkv = dt[key]
+                qkv = qkv.reshape(-1, gs + 2, head_dim, hid_size)
+                q = qkv[:, :gs, ...].reshape(-1, hid_size)
+                k = qkv[:, -2, ...].reshape(-1, hid_size)
+                v = qkv[:, -1, ...].reshape(-1, hid_size)
+                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = q
+                output_dt[f"module.{layer_id + 3}.self_attn.k_proj.weight"] = k
+                output_dt[f"module.{layer_id + 3}.self_attn.v_proj.weight"] = v
+            if 'attention.wo' in key:
+                output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
+            if 'feed_forward.w1' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.gate_proj.weight'] = dt[key]
+            if 'feed_forward.w2' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.down_proj.weight'] = dt[key]
+            if 'feed_forward.w3' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.up_proj.weight'] = dt[key]
+            if 'ffn_norm.weight' in key:
+                output_dt[f'module.{layer_id + 3}.post_attention_layernorm.weight'] = dt[key]
+            if 'attention_norm.weight' in key:
+                output_dt[f'module.{layer_id + 3}.input_layernorm.weight'] = dt[key]
+        else:
+            logger.info(f"unuse keys {key}")
+    return output_dt
+
+
+def hf_to_megatron_llama(dt, model):
+    output_dt = {}
+    num_layers = model.model_kwargs['num_layers']
+    for key in dt.keys():
+        if 'model.embed_tokens' in key:
+            output_dt['module.1.word_embeddings.weight'] = dt['model.embed_tokens.weight']
+        elif 'model.norm' in key:
+            output_dt[f'module.{num_layers + 4}.weight'] = dt[key]
+        elif 'lm_head' in key:
+            output_dt[f'module.{num_layers + 5}.word_embeddings.weight'] = dt[key]
+        elif "layers" in key:
+            layer_id = int(key.split('.')[2])
+            if 'self_attn.q_proj' in key:
+                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = dt[key]
+            if 'self_attn.k_proj' in key:
+                output_dt[f'module.{layer_id + 3}.self_attn.k_proj.weight'] = dt[key]
+            if 'self_attn.v_proj' in key:
+                output_dt[f'module.{layer_id + 3}.self_attn.v_proj.weight'] = dt[key]
+            if 'self_attn.o_proj' in key:
+                output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
+            if 'gate_proj' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.gate_proj.weight'] = dt[key]
+            if 'down_proj' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.down_proj.weight'] = dt[key]
+            if 'up_proj' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.up_proj.weight'] = dt[key]
+            if 'post_attention_layernorm' in key:
+                output_dt[f'module.{layer_id + 3}.post_attention_layernorm.weight'] = dt[key]
+            if 'input_layernorm' in key:
+                output_dt[f'module.{layer_id + 3}.input_layernorm.weight'] = dt[key]
+        else:
+            logger.info(f"unuse keys {key}")
+    return output_dt
+
+
+def get_module_param(name, model):
+    module = None
+    try:
+        keys = name.split('.')
+        module = model.get_submodule(name[:-(len(keys[-1]) + 1)])
+        param = getattr(module, keys[-1])
+    except: # noqa
+        param = None
+    return param, module
+
+
 def get_start_end(size, tp_world_size, tp_rank):
     base_block_size = size
     res = {}
@@ -67,14 +156,22 @@ def get_start_end(size, tp_world_size, tp_rank):
     return res[tp_rank]
 
 
-def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode):
+def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set):
     logger.info(f"loadding {filename}")
     if "s3://" in filename:
         dt = PetrelHelper.load(filename, map_location='cpu')
     else:
         dt = torch.load(filename, map_location='cpu')
+    if pretrain_type == 'internlm2':
+        dt = internlm2_to_llama2(dt, model)
+    elif pretrain_type == 'llama':
+        dt = hf_to_megatron_llama(dt, model)
+    else:
+        logger.info(f"{pretrain_type} is not be supported")
+
     for name in dt.keys():
-        param, module = get_fp32_params_from_key(name, model, num_layers, lora_mode)
+        param, module = get_module_param(name, model)
+        # param, module = get_fp32_params_from_key(name, model, num_layers, lora_mode)
         if module is None:
             continue
         slice_ = dt[name]
@@ -97,7 +194,6 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode):
             continue
         elif param.shape != tensor.shape:
             print(param.shape, tensor.shape, module)
-            # import ipdb; ipdb.set_trace()
             n_tensor = param.data.clone()
             n_tensor[:tensor.size(0), :] = tensor
             temp = slice_.sum(1).argmin().item()
@@ -106,10 +202,13 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode):
         else:
             # raise ValueError(f"Name {name}, module: {module} -- Current {param.shape} and got {tensor.shape}")
             param.data.copy_(tensor)
+        init_set.add(name)
 
 
-def load_llama_from_hf_format(load_dir, model, optimizer,
-                              num_layers, lora_mode=False, worker=8):
+def load_llama_from_hf_format(load_dir,
+                              model, optimizer,
+                              num_layers, lora_mode=False,
+                              worker=8, pretrain_type='llama'):
     filenames = glob.glob(os.path.join(load_dir, '*.bin'))
     # for ceph support
     if len(filenames) == 0:
@@ -124,11 +223,24 @@ def load_llama_from_hf_format(load_dir, model, optimizer,
             return False
     tp_rank = dist_env.get_tensor_model_parallel_rank()
     tp_world_size = dist_env.get_tensor_model_parallel_world_size()
+    init_set = set()
+    # for filename in filenames[3:]:
+    #     load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set)
+    # import ipdb; ipdb.set_trace()
     from functools import partial
     from multiprocessing.pool import ThreadPool as Pool
-    partial_func = partial(load_func, tp_rank=tp_rank, tp_world_size=tp_world_size, model=model, num_layers=num_layers, lora_mode=lora_mode)  # noqa
+    partial_func = partial(load_func, tp_rank=tp_rank, tp_world_size=tp_world_size, model=model, num_layers=num_layers, lora_mode=lora_mode, pretrain_type=pretrain_type, init_set=init_set)  # noqa
     with Pool(worker) as p:
         _ = p.map(partial_func, filenames)
+    mega_model_keys = set(model.state_dict().keys())
+    not_init_set = mega_model_keys - init_set
+    filter_not_init_set = set()
+    for k in not_init_set:
+        if 'inv_freq' in k:
+            pass
+        else:
+            filter_not_init_set.add(k)
+    logger.info(f"not init set {filter_not_init_set}")
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
     # fix optimizer
@@ -258,7 +370,8 @@ def load_ckpt_pretrained(cfg_loader, model, optimizer):
         if cfg_loader['load_mode'] == 'huggingface':
             worker = cfg_loader.get('worker', 8)
             success = load_llama_from_hf_format(cfg_loader['load_path'], model,
-                                                optimizer, model.model_kwargs['num_layers'], worker=worker)
+                                                optimizer, model.model_kwargs['num_layers'],
+                                                worker=worker, pretrain_type=cfg_loader.get('pretrain_type', 'llama'))
         else:
             logger.error("Load Llama by the {} load mode is not support now".format(cfg_loader['load_mode']))
             raise NotImplementedError
@@ -276,7 +389,8 @@ def save_lora_ckpt_pretrained(cfg_lora, model, iteration=None):
     num_layers = len(model.forward_funcs)
     config_name = cfg_lora['saver'].get('save_config_name', 'adapter_config.json')
     peft_template = {"alpha_pattern": {}, "auto_mapping": None, "bias": "none", "modules_to_save": [],
-                     "init_lora_weights": True, "layers_pattern": None, "target_modules": [], "fan_in_fan_out": False, "inference_mode": True,
+                     "init_lora_weights": True, "layers_pattern": None, "target_modules": [],
+                     "fan_in_fan_out": False, "inference_mode": True,
                      "layers_to_transform": None, "peft_type": "LORA", "task_type": "CAUSAL_LM"}
 
     assert cfg_lora['saver'].get('save_mode', 'deepspeed') == 'deepspeed', 'only support deepspeed lora save mode now!'
