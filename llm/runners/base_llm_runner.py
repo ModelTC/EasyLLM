@@ -52,10 +52,10 @@ class BaseRunner(object):
         self.build_tokenizer()
         self.build_hooks()
         self.build_model()
+        self.load_checkpoint()
         self.build_data_engine()
         self.build_trainer()
         self.deepspeed_init()
-        self.load_checkpoint()
 
     def set_param_components(self):
         self.start_iteration = 0
