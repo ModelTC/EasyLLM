@@ -1,0 +1,181 @@
+runtime:
+  seed: &seed 42
+  tensor_model_parallel_size: 4
+  pipeline_model_parallel_size: 2
+  deepspeed: True
+  lora_mode: False
+  bf16: &bf16 True
+  fp16: &fp16 False
+  dynamic: True
+  use_dp_rank: True
+
+
+deepspeed:
+  config:
+    gradient_clipping: 1.0
+    zero_optimization:
+      stage: 0
+    bf16:
+      enabled: *bf16
+    fp16:
+      enabled: *fp16
+    steps_per_print: 2000
+    wall_clock_breakdown: False
+
+
+tokenizer:
+  type: QWenTokenizer
+  kwargs:
+    tokenizer_name_or_path: &file_path qwen_14b_base
+    use_auth_token: False
+  pad_vocab_size_to: 152064
+
+
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 2048
+    parser_type: simple_chat
+
+
+infer_tokenization:
+  type: sense_tokenization
+  kwargs:
+    max_seq_length: 2048
+    parser_type: simple_chat
+
+
+data:
+  data_types: [train, infer]
+  train:
+    seq_length: *train_seq_length
+    global_batch_size: &train_global_batch_size 128
+    micro_batch_size: &train_micro_batch_size 2
+    dataset:
+      type: base_nlp_json
+      kwargs:
+        json_file: your/json/path
+        transformer: [*tokenization]
+        json_type: line
+    batch_sampler:
+      type: megatron_pretrain
+      kwargs:
+        micro_batch_size: *train_micro_batch_size
+        drop_last: True
+    batch_collector:
+      type: batch_align
+      kwargs:
+        alignment: 4
+        max_seq_length: *train_seq_length
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 2
+        pin_memory: True
+        seed: *seed
+    batch_pipe:
+      type: json_batch_pipe
+      kwargs:
+        reset_position_ids: False
+        reset_attention_mask: False
+        eod_mask_loss: True
+        loss_on_targets_only: True
+    # notice the batch_calculator only works at the training time
+    batch_calculator:
+      type: rampup_batch_size_num
+      kwargs:
+        start_batch_size: 32
+        batch_size_increment: 8
+        ramup_samples: 1000
+        global_batch_size: *train_global_batch_size
+        micro_batch_size: *train_micro_batch_size
+  infer:
+    seq_length: &infer_seq_length 40
+    global_batch_size: &infer_global_batch_size 1
+    micro_batch_size: &infer_micro_batch_size 1
+    batch_pipe:
+      type: token_batch_pipe
+      kwargs:
+        reset_position_ids: False
+        reset_attention_mask: False
+        eod_mask_loss: False
+        loss_on_targets_only: False
+
+
+trainer:
+  #train_samples: 220000
+  train_iters:  1000
+  optimizer:
+    type: FusedAdam      # apex FusedAdam
+    kwargs:
+      lr: 2.e-5
+      weight_decay: 0
+      betas: [0.9, 0.95]
+      eps: 1.e-8
+  lr_scheduler:
+    type: iter_base_annealing
+    kwargs:
+      min_lr: 1.e-6
+      decay_style: cosine
+      #lr_decay_samples: 20000
+      #lr_warmup_samples: 18315
+      lr_warmup_iters: 100
+      lr_decay_iters: 800
+      #init_consumed_tokens: 0
+      use_checkpoint_lr_scheduler: False
+      override_lr_scheduler: False
+
+saver:
+  save_path: checkpoints/qwen_14b_sft
+  save_interval: 100              # set save_interval to 0 to not save any ckpt.
+  save_mode: deepspeed
+  save_optim: True
+  save_rng_state: True
+  save_zero: True
+
+loader:
+  load_path: qwen_14b_base
+  load_mode: huggingface
+  # load_path: checkpoints/qwen_14b_sft
+  # load_mode: deepspeed
+  load_optim: True
+  load_rng_state: True
+  load_zero: True
+  load_base_state: True
+  # debug: True
+  pretrain_type: qwen
+
+
+hooks:
+  - type: train_val_logger
+    kwargs:
+      log_interval: 1
+      report_memory_interval: 10
+      log_dir: tf_logs/llama-7b
+      tensorboard: True
+
+
+model:
+  type: llama_custom
+  kwargs:
+     num_layers: 40
+     hidden_size: 5120
+     num_attention_heads: 40
+     intermediate_size: 13696 # 27392
+     kv_channels: 128
+     use_flash_attn: True
+     sequence_parallel: True
+     pp_partition_method: parameters
+     transformer_layer_params:
+        attention_qkv_bias: True
+        position_embedding_kwargs:
+           base: 10000
+     dynamic_checkpoint:
+        enabled: False
+        size_map:
+            512: 0
+            1024: 0
+            2048: 0
+            4096: 0
+            8192: 0

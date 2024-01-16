@@ -55,6 +55,60 @@ def get_fp32_params_from_key(key, model, num_layers, lora_mode=False):
         return None, None
 
 
+def qwen_to_llama(dt, model):
+    output_dt = {}
+    hid_size = model.transformer_layer_params['hidden_size']
+    num_layers = model.model_kwargs['num_layers']
+    for key in dt.keys():
+        if 'wte.weight' in key:
+            output_dt['module.1.word_embeddings.weight'] = dt[key]
+        elif 'ln_f.weight' in key:
+            output_dt[f'module.{num_layers + 4}.weight'] = dt[key]
+        elif 'lm_head.weight' in key:
+            output_dt[f'module.{num_layers + 5}.word_embeddings.weight'] = dt[key]
+        elif "transformer.h" in key:
+            layer_id = int(key.split('.')[2])
+            if 'attn.c_attn.weight' in key:
+                qkv_weight = dt[key]
+                s_size = qkv_weight.shape[0] // 3
+                qkv_weight = torch.split(qkv_weight,
+                                         dim=0,
+                                         split_size_or_sections=[s_size, s_size, s_size])
+                q_weight = qkv_weight[0].reshape(-1, hid_size)
+                k_weight = qkv_weight[1].reshape(-1, hid_size)
+                v_weight = qkv_weight[2].reshape(-1, hid_size)
+                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = q_weight
+                output_dt[f"module.{layer_id + 3}.self_attn.k_proj.weight"] = k_weight
+                output_dt[f"module.{layer_id + 3}.self_attn.v_proj.weight"] = v_weight
+            if 'attn.c_attn.bias' in key:
+                qkv_bias = dt[key]
+                s_size = qkv_bias.shape[0] // 3
+                qkv_bias = torch.split(qkv_bias,
+                                       dim=0,
+                                       split_size_or_sections=[s_size, s_size, s_size])
+                q_bias = qkv_bias[0].reshape(s_size)
+                k_bias = qkv_bias[1].reshape(s_size)
+                v_bias = qkv_bias[2].reshape(s_size)
+                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.bias"] = q_bias
+                output_dt[f"module.{layer_id + 3}.self_attn.k_proj.bias"] = k_bias
+                output_dt[f"module.{layer_id + 3}.self_attn.v_proj.bias"] = v_bias
+            if 'attn.c_proj' in key:
+                output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
+            if 'mlp.w2.weight' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.gate_proj.weight'] = dt[key]
+            if 'mlp.c_proj.weight' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.down_proj.weight'] = dt[key]
+            if 'mlp.w1.weight' in key:
+                output_dt[f'module.{layer_id + 3}.mlp.up_proj.weight'] = dt[key]
+            if 'ln_2.weight' in key:
+                output_dt[f'module.{layer_id + 3}.post_attention_layernorm.weight'] = dt[key]
+            if 'ln_1.weight' in key:
+                output_dt[f'module.{layer_id + 3}.input_layernorm.weight'] = dt[key]
+        else:
+            logger.info(f"unuse keys {key}")
+    return output_dt
+
+
 def internlm2_to_llama2(dt, model):
     output_dt = {}
     n_heads = model.transformer_layer_params['num_attention_heads']
@@ -165,8 +219,11 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
         dt = safe_load_file(filename)
     else:
         dt = torch.load(filename, map_location='cpu')
+
     if pretrain_type == 'internlm2':
         dt = internlm2_to_llama2(dt, model)
+    elif pretrain_type == "qwen":
+        dt = qwen_to_llama(dt, model)
     elif pretrain_type == 'llama':
         dt = hf_to_megatron_llama(dt, model)
     else:

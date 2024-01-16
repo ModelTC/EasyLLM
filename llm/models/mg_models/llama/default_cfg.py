@@ -172,7 +172,8 @@ _TRANSFROMER_LAYER_DEFAULT_CONFIG = {
         "type": "scaled_normal",
         "kwargs": {"sigma": 0.02, "num_layers": 32}
     },
-    'attention_bias': False
+    'attention_qkv_bias': False,
+    'attention_o_bias': False
 }
 
 

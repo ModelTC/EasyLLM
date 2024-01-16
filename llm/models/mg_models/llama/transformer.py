@@ -256,8 +256,9 @@ class ParallelAttention(MegatronModule):
                  sync_tp_duplicated_parameters=True,
                  sequence_parallel=False,
                  use_flash_attn=False,
-                 bias=False,
-                 use_matmul=False):
+                 use_matmul=False,
+                 qkv_bias=False,
+                 o_bias=False):
         super(ParallelAttention, self).__init__()
         self.fp16 = fp16
         self.bf16 = bf16
@@ -308,7 +309,7 @@ class ParallelAttention(MegatronModule):
                 projection_size,
                 gather_output=False,
                 init_method=init_method,
-                bias=bias,
+                bias=qkv_bias,
                 use_cpu_initialization=use_cpu_initialization,
                 params_dtype=params_dtype,
                 sequence_parallel=sequence_parallel)
@@ -318,7 +319,7 @@ class ParallelAttention(MegatronModule):
                 projection_size_kv,
                 gather_output=False,
                 init_method=init_method,
-                bias=bias,
+                bias=qkv_bias,
                 use_cpu_initialization=use_cpu_initialization,
                 params_dtype=params_dtype,
                 sequence_parallel=sequence_parallel)
@@ -328,7 +329,7 @@ class ParallelAttention(MegatronModule):
                 projection_size_kv,
                 gather_output=False,
                 init_method=init_method,
-                bias=bias,
+                bias=qkv_bias,
                 use_cpu_initialization=use_cpu_initialization,
                 params_dtype=params_dtype,
                 sequence_parallel=sequence_parallel)
@@ -366,7 +367,7 @@ class ParallelAttention(MegatronModule):
             input_is_parallel=True,
             init_method=output_layer_init_method,
             skip_bias_add=True,
-            bias=bias,
+            bias=o_bias,
             use_cpu_initialization=use_cpu_initialization,
             params_dtype=params_dtype,
             sync_tp_duplicated_parameters=sync_tp_duplicated_parameters,
@@ -640,8 +641,9 @@ class ParallelTransformerLayer(MegatronModule):
                  use_flash_attn=False,
                  initializer=None,
                  output_initializer=None,
-                 attention_bias=False,
                  use_matmul=False,
+                 attention_qkv_bias=False,
+                 attention_o_bias=False,
                  ):
 
         super(ParallelTransformerLayer, self).__init__()
@@ -681,8 +683,9 @@ class ParallelTransformerLayer(MegatronModule):
             sync_tp_duplicated_parameters=sync_tp_duplicated_parameters,
             sequence_parallel=sequence_parallel,
             use_flash_attn=use_flash_attn,
-            bias=attention_bias,
             use_matmul=use_matmul,
+            qkv_bias=attention_qkv_bias,
+            o_bias=attention_o_bias
         )
 
         # Self attention.
