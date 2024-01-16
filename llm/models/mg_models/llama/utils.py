@@ -160,6 +160,9 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
     logger.info(f"loadding {filename}")
     if "s3://" in filename:
         dt = PetrelHelper.load(filename, map_location='cpu')
+    elif filename.endswith(".safetensors"):
+        from safetensors.torch import load_file as safe_load_file
+        dt = safe_load_file(filename)
     else:
         dt = torch.load(filename, map_location='cpu')
     if pretrain_type == 'internlm2':
@@ -210,17 +213,19 @@ def load_llama_from_hf_format(load_dir,
                               num_layers, lora_mode=False,
                               worker=8, pretrain_type='llama'):
     filenames = glob.glob(os.path.join(load_dir, '*.bin'))
-    # for ceph support
+    # for ceph & safetensors support
     if len(filenames) == 0:
-        ceph_filenames = glob.glob(os.path.join(load_dir, '*.ceph'))
-        if len(ceph_filenames) > 0:
-            ceph_paths = []
-            for item in ceph_filenames:
-                with open(item, "r") as f:
-                    ceph_paths.append(f.readlines()[0].strip())
-            filenames = ceph_paths
-        else:
-            return False
+        filenames = glob.glob(os.path.join(load_dir, '*.safetensors'))
+        if len(filenames) == 0:
+            ceph_filenames = glob.glob(os.path.join(load_dir, '*.ceph'))
+            if len(ceph_filenames) > 0:
+                ceph_paths = []
+                for item in ceph_filenames:
+                    with open(item, "r") as f:
+                        ceph_paths.append(f.readlines()[0].strip())
+                filenames = ceph_paths
+            else:
+                return False
     tp_rank = dist_env.get_tensor_model_parallel_rank()
     tp_world_size = dist_env.get_tensor_model_parallel_world_size()
     init_set = set()
