@@ -88,8 +88,9 @@ def get_save_folder(name):
 
 
 def process(item):
-    root, name, tokenizer_path, split_len, bin_size, out_folder, space_id = item[0], item[1], item[2], item[3], item[4], item[5], item[6] # noqa
+    root, name, tokenizer_path, split_len, bin_size, out_folder = item[0], item[1], item[2], item[3], item[4], item[5] # noqa
     tokenizer = LlamaTokenizerFast.from_pretrained(tokenizer_path)
+    replace_id = tokenizer.convert_tokens_to_ids("▁")
     path = os.path.join(root, name)
     with open(path) as f:
         merge_tokens = []
@@ -109,12 +110,12 @@ def process(item):
                 else:
                     tokens = tokenizer(text, return_attention_mask=False, add_special_tokens=False)['input_ids']
                 if len(tokens) > 0:
-                    if tokens[0] == space_id:
+                    if tokens[0] == replace_id:
                         tokens = tokens[1:]
                     # jump case that text == " "
                     if len(tokens) == 0:
                         continue
-                    if text[-1] != ' ' and tokens[-1] == space_id:
+                    if text[-1] != ' ' and tokens[-1] == replace_id:
                         tokens = tokens[:-1]
                 merge_tokens.extend(tokens)
             merge_tokens.append(tokenizer.eos_token_id)
@@ -166,11 +167,6 @@ if __name__ == '__main__':
         default=262144, type=int,
         help="bin size default 256K",
     )
-    parser.add_argument(
-        "--space_id",
-        default=65616, type=int,
-        help="space id on your tokenizer",
-    )
     args = parser.parse_args()
     worker = int(args.worker)
     root = args.data_root
@@ -181,9 +177,8 @@ if __name__ == '__main__':
     group = int(args.group)
     group_id = int(args.group_id)
     bin_size = int(args.bin_size)
-    space_id = int(args.space_id)
     paths = open(path_list).readlines()[:]
-    paths = [(root, item.strip(), tokenizer_path, split_len, bin_size, out_folder, space_id) for item in paths]
+    paths = [(root, item.strip(), tokenizer_path, split_len, bin_size, out_folder) for item in paths]
     if group > 1:
         assert group >= 1
         group_size, mod = divmod(len(paths), group)
