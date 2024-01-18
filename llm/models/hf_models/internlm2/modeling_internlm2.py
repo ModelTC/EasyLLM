@@ -711,6 +711,10 @@ class InternLM2PreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
+    def _set_gradient_checkpointing(self, module, value=False):
+        if isinstance(module, InternLM2Model):
+            module.gradient_checkpointing = value
+
 
 InternLM2_INPUTS_DOCSTRING = r"""
     Args:
