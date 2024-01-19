@@ -198,6 +198,7 @@ class InternLMAttention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         padding_mask: Optional[torch.LongTensor] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -283,6 +284,7 @@ class InternLMDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         padding_mask: Optional[torch.LongTensor] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -311,6 +313,7 @@ class InternLMDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
+            cu_seqlens=cu_seqlens
         )
         hidden_states = residual + hidden_states
 
@@ -494,6 +497,7 @@ class InternLMModel(InternLMPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -571,7 +575,11 @@ class InternLMModel(InternLMPreTrainedModel):
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         # None for past_key_value
-                        return module(*inputs, output_attentions, None, padding_mask=padding_mask)
+                        return module(*inputs,
+                                      output_attentions,
+                                      None,
+                                      padding_mask=padding_mask,
+                                      cu_seqlens=cu_seqlens)
 
                     return custom_forward
 
@@ -590,7 +598,8 @@ class InternLMModel(InternLMPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    padding_mask=padding_mask
+                    padding_mask=padding_mask,
+                    cu_seqlens=cu_seqlens
                 )
 
             hidden_states = layer_outputs[0]
@@ -662,6 +671,7 @@ class InternLMForCausalLM(InternLMPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -700,6 +710,7 @@ class InternLMForCausalLM(InternLMPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            cu_seqlens=cu_seqlens
         )
 
         hidden_states = outputs[0]

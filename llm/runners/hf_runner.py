@@ -225,6 +225,10 @@ class HFRunner(object):
             iterator = self.data_iterators[batch_type] = iter(self.data_loaders[batch_type])
             batch = next(iterator)
         batch = self.batch2device(batch)
+        if "position_ids" not in batch:
+            batch["position_ids"] = None
+        if "cu_seqlens" not in batch:
+            batch["cu_seqlens"] = None
         return batch
 
     def _save(self, iteration):
@@ -242,11 +246,20 @@ class HFRunner(object):
             batch = self.get_batch()
             self._hooks('before_train_iter', self.cur_iter, batch)
             with torch.cuda.amp.autocast(enabled=True, dtype=self.dtype):
-                output = self.model(batch['input_ids'],
-                                    batch['attention_mask'],
-                                    labels=batch['labels'],
-                                    return_dict=True,
-                                    use_cache=False)
+                if batch["position_ids"] is not None and batch["cu_seqlens"] is not None:
+                    output = self.model(batch['input_ids'],
+                                        batch['attention_mask'],
+                                        labels=batch['labels'],
+                                        return_dict=True,
+                                        use_cache=False,
+                                        position_ids=batch["position_ids"],
+                                        cu_seqlens=batch["cu_seqlens"])
+                else:
+                    output = self.model(batch['input_ids'],
+                                        batch['attention_mask'],
+                                        labels=batch['labels'],
+                                        return_dict=True,
+                                        use_cache=False)
             losses = [val for name, val in output.items() if name.find('loss') >= 0]
             loss = sum(losses)
             if self.deepspeed:

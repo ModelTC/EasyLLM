@@ -112,9 +112,13 @@ class PretrainBinDataset(Dataset):
         return meta
 
     def set_seed(self, seed):
-        from llm.utils.env import dist_env
-        # reset seed for different PP stage
-        seed = seed + 3 * dist_env.get_data_parallel_rank()
+        try:
+            from llm.utils.env import dist_env
+            # reset seed for different PP stage
+            seed = seed + 3 * dist_env.get_data_parallel_rank()
+        except Exception:
+            from llm.utils.env.hf_dist_helper import get_rank
+            seed = seed + 3 * get_rank()
         random.seed(seed)
 
     def __getitem__(self, idx):

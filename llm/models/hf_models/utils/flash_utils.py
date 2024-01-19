@@ -45,12 +45,15 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
-    # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
-    cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
-    sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-    cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-    sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, offset=0):
+    if position_ids is None:
+        cos = cos[:, :, q.shape[-2] + offset], sin[:, :, q.shape[-2] + offset]
+    else:
+        # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
+        cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
+        sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
+        cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+        sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -70,14 +73,22 @@ class FlashRMSNorm(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, scale_factor=1.0, device=None):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.inv_freq = inv_freq
 
         # Build here to make `torch.jit.trace` work.
-        self.max_seq_len_cached = max_position_embeddings
-        t = torch.arange(self.max_seq_len_cached, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
+        self.scale_factor = scale_factor
+        self._set_cos_sin_cache(seq_len=max_position_embeddings,
+                                device=inv_freq.device,
+                                dtype=inv_freq.dtype)
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=dtype)
+        t = t / self.scale_factor
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -88,13 +99,8 @@ class RotaryEmbedding(nn.Module):
         # x: [bs, num_attention_heads, seq_len, head_size]
         # This `if` block is unlikely to be run after we build sin/cos in `__init__`. Keep the logic here just in case.
         if seq_len > self.max_seq_len_cached:
-            self.max_seq_len_cached = seq_len
-            t = torch.arange(self.max_seq_len_cached, device=x.device, dtype=self.inv_freq.dtype)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            # Different from paper, but it uses a different permutation in order to obtain the same calculation
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
-            self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
         return (
             self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
             self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
@@ -421,8 +427,11 @@ class FlashAttention(nn.Module):
                 self.flash_rotary_emb = FlashRotaryEmbedding(dim=self.head_dim, device=torch.cuda.current_device())
                 self.rotary_emb = False
             else:
+                base = getattr(config, "base", 10000)
                 self.rotary_emb = RotaryEmbedding(self.head_dim,
-                                                  max_position_embeddings=self.max_position_embeddings)
+                                                  max_position_embeddings=self.max_position_embeddings,
+                                                  base=base,
+                                                  device=torch.cuda.current_device())
                 self.flash_rotary_emb = False
         else:
             self.rotary_emb = False
@@ -440,10 +449,10 @@ class FlashAttention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         padding_mask: Optional[torch.LongTensor] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         # LlamaFlashAttention2 attention does not support output_attentions
         output_attentions = False
-
         bsz, q_len, _ = hidden_states.size()
         if self.pack_qkv:
             proj = self.W_pack(hidden_states)
@@ -475,7 +484,8 @@ class FlashAttention(nn.Module):
                                                             key_states,
                                                             cos,
                                                             sin,
-                                                            position_ids)
+                                                            position_ids,
+                                                            seqlen_offset)
         elif self.flash_rotary_emb:
             query_states, key_states = self.flash_rotary_emb(query_states.transpose(1, 2),
                                                              key_states.transpose(1, 2),
@@ -517,9 +527,13 @@ class FlashAttention(nn.Module):
             key_states = key_states.to(torch.float16)
             value_states = value_states.to(torch.float16)
 
-        attn_output = self._flash_attention_forward(
-            query_states, key_states, value_states, padding_mask, q_len, dropout=dropout_rate
-        )
+        attn_output = self._flash_attention_forward(query_states,
+                                                    key_states,
+                                                    value_states,
+                                                    padding_mask,
+                                                    q_len,
+                                                    dropout=dropout_rate,
+                                                    cu_seqlens=cu_seqlens)
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -529,9 +543,15 @@ class FlashAttention(nn.Module):
 
         return attn_output, attn_weights, past_key_value
 
-    def _flash_attention_forward(
-        self, query_states, key_states, value_states, padding_mask, query_length, dropout=0.0, softmax_scale=None
-    ):
+    def _flash_attention_forward(self,
+                                 query_states,
+                                 key_states,
+                                 value_states,
+                                 padding_mask,
+                                 query_length,
+                                 dropout=0.0,
+                                 softmax_scale=None,
+                                 cu_seqlens=None):
         """
         Calls the forward method of Flash Attention - if the input hidden states contain at least one padding token
         first unpad the input, then computes the attention scores and pad the final attention scores.
@@ -552,7 +572,25 @@ class FlashAttention(nn.Module):
                 The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim)
         """
         # Contains at least one padding token in the sequence
-        if padding_mask is not None:
+        if cu_seqlens is not None:
+            cu_seqlens = cu_seqlens.to(query_states.device).to(torch.int32)
+            _, max_seqlen, heads, head_dim = query_states.shape
+            query_states = query_states.view(-1, heads, head_dim)
+            key_states = key_states.view(-1, heads, head_dim)
+            value_states = value_states.view(-1, heads, head_dim)
+            attn_output = flash_attn_varlen_func(
+                query_states,
+                key_states,
+                value_states,
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=True,
+            )
+        elif padding_mask is not None:
             batch_size = query_states.shape[0]
             query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = self._upad_input(
                 query_states, key_states, value_states, padding_mask, query_length
