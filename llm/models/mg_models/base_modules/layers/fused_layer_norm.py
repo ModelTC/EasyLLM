@@ -53,7 +53,7 @@ class RMSNorm(torch.nn.Module):
                                          op=torch.distributed.ReduceOp.AVG,
                                          group=dist_env.get_tensor_model_parallel_group())
 
-        if self.use_flash_attn and flash_attn_rms_norm and input.shape[-1] <= 10240:
+        if self.use_flash_attn and flash_attn_rms_norm and input.shape[-1] <= 8192:
             return flash_attn_rms_norm(input, self.weight, self.eps)
 
         if self.hf_mode:
