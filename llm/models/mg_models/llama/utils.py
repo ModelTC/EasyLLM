@@ -165,13 +165,25 @@ def hf_to_megatron_llama(dt, model):
         elif "layers" in key:
             layer_id = int(key.split('.')[2])
             if 'self_attn.q_proj' in key:
-                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = dt[key]
+                if 'weight' in key:
+                    output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = dt[key]
+                else:
+                    output_dt[f"module.{layer_id + 3}.self_attn.q_proj.bias"] = dt[key]
             if 'self_attn.k_proj' in key:
-                output_dt[f'module.{layer_id + 3}.self_attn.k_proj.weight'] = dt[key]
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id + 3}.self_attn.k_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id + 3}.self_attn.k_proj.bias'] = dt[key]
             if 'self_attn.v_proj' in key:
-                output_dt[f'module.{layer_id + 3}.self_attn.v_proj.weight'] = dt[key]
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id + 3}.self_attn.v_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id + 3}.self_attn.v_proj.bias'] = dt[key]
             if 'self_attn.o_proj' in key:
-                output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id + 3}.self_attn.o_proj.bias'] = dt[key]
             if 'gate_proj' in key:
                 output_dt[f'module.{layer_id + 3}.mlp.gate_proj.weight'] = dt[key]
             if 'down_proj' in key:
