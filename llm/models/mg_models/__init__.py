@@ -41,6 +41,12 @@ def build_model(tokenizer, cfg, lora_mode, cfg_lora, base_type):
                                 "vocab_size": vocab_size,
                                 "micro_batch_size": cfg['data'][base_type]['micro_batch_size'],
                                 "seq_length": cfg['data'][base_type]['seq_length']})       # noqa
+    is_qkv_pack = cfg_model['kwargs'].get("transformer_layer_params", {}).get("qkv_pack", False)
+    pretrain_type = cfg['loader'].get("pretrain_type", "llama")
+    if is_qkv_pack:
+        assert "pack" in pretrain_type, "qkv_pack must load the model in pack type. currently support llama_pack and internlm2_pack!"
+    else:
+        assert "pack" not in pretrain_type, "You load the model in pack type, but do not set qkv_pack as True!"
     model = MODULE_ZOO_REGISTRY.build(cfg_model)
     if lora_mode and (cfg_lora is not None):
         model = convert_layer_to_lora(model, cfg_lora)

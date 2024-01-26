@@ -114,7 +114,7 @@ class RowParallelLinear(torch.nn.Module):
         # All-reduce across all the partitions.
 
         if self.sequence_parallel:
-            output_ = dist_env.reduce_scatter_to_sequence_parallel_region(output_parallel, buffer_name="dist_env")
+            output_ = dist_env.reduce_scatter_to_sequence_parallel_region(output_parallel)
         else:
             output_ = dist_env.reduce_from_tensor_model_parallel_region(output_parallel)
 

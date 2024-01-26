@@ -28,6 +28,7 @@ class LoraColumnParallelLinear(ColumnParallelLinear):
                          params_dtype=params_dtype,
                          sequence_parallel=sequence_parallel)
         assert not use_cpu_initialization
+        assert not sequence_parallel, "Lora does not support sequence_parallel currently!"
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.scaling = self.lora_alpha / self.lora_rank
@@ -47,10 +48,7 @@ class LoraColumnParallelLinear(ColumnParallelLinear):
 
     def forward(self, input_):
         # Set up backprop all-reduce.
-        if self.sequence_parallel:
-            input_parallel = input_
-        else:
-            input_parallel = dist_env.copy_to_tensor_model_parallel_region(input_)
+        input_parallel = dist_env.copy_to_tensor_model_parallel_region(input_)
         # Matrix multiply.
 
         bias = self.bias if not self.skip_bias_add else None
@@ -96,8 +94,8 @@ class LoraRowParallelLinear(RowParallelLinear):
                          keep_master_weight_for_test, skip_bias_add,
                          use_cpu_initialization, params_dtype,
                          sync_tp_duplicated_parameters, sequence_parallel)
-
         assert not use_cpu_initialization
+        assert not sequence_parallel, "Lora does not support sequence_parallel currently!"
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.scaling = self.lora_alpha / self.lora_rank
@@ -137,10 +135,7 @@ class LoraRowParallelLinear(RowParallelLinear):
         output_lora *= self.scaling
         output_parallel += output_lora
         # All-reduce across all the partitions.
-        if self.sequence_parallel:
-            output_ = dist_env.reduce_scatter_to_sequence_parallel_region(output_parallel, buffer_name="dist_env")
-        else:
-            output_ = dist_env.reduce_from_tensor_model_parallel_region(output_parallel)
+        output_ = dist_env.reduce_from_tensor_model_parallel_region(output_parallel)
 
         if self.bias_tp_auto_sync and self.bias:
             torch.distributed.all_reduce(self.bias,

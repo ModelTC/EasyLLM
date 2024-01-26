@@ -214,10 +214,6 @@ class ParallelMLP(MegatronModule):
     def forward(self, hidden_states):
 
         # [s, b, 4hp]
-        if self.sequence_parallel:
-            hidden_states = dist_env.gather_from_sequence_parallel_region(hidden_states,
-                                                                          tensor_parallel_output_grad=True,
-                                                                          buffer_name="dist_env")
         h1, _ = self.gate_proj(hidden_states)
         h2, _ = self.up_proj(hidden_states)
         h1 = self.activation_func(h1) * h2
@@ -257,6 +253,7 @@ class ParallelAttention(MegatronModule):
                  sequence_parallel=False,
                  use_flash_attn=False,
                  use_matmul=False,
+                 qkv_pack=False,
                  qkv_bias=False,
                  o_bias=False):
         super(ParallelAttention, self).__init__()
@@ -304,35 +301,49 @@ class ParallelAttention(MegatronModule):
 
         # Strided linear layer.
         if attention_type == AttnType.self_attn:
-            self.q_proj = ColumnParallelLinear(
-                hidden_size,
-                projection_size,
-                gather_output=False,
-                init_method=init_method,
-                bias=qkv_bias,
-                use_cpu_initialization=use_cpu_initialization,
-                params_dtype=params_dtype,
-                sequence_parallel=sequence_parallel)
+            self.qkv_pack = qkv_pack
+            self.q_size = projection_size // dist_env.get_tensor_model_parallel_world_size()
+            self.kv_size = projection_size_kv // dist_env.get_tensor_model_parallel_world_size()
+            if not self.qkv_pack:
+                self.q_proj = ColumnParallelLinear(
+                    hidden_size,
+                    projection_size,
+                    gather_output=False,
+                    init_method=init_method,
+                    bias=qkv_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    params_dtype=params_dtype,
+                    sequence_parallel=sequence_parallel)
 
-            self.k_proj = ColumnParallelLinear(
-                hidden_size,
-                projection_size_kv,
-                gather_output=False,
-                init_method=init_method,
-                bias=qkv_bias,
-                use_cpu_initialization=use_cpu_initialization,
-                params_dtype=params_dtype,
-                sequence_parallel=sequence_parallel)
+                self.k_proj = ColumnParallelLinear(
+                    hidden_size,
+                    projection_size_kv,
+                    gather_output=False,
+                    init_method=init_method,
+                    bias=qkv_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    params_dtype=params_dtype,
+                    sequence_parallel=sequence_parallel)
 
-            self.v_proj = ColumnParallelLinear(
-                hidden_size,
-                projection_size_kv,
-                gather_output=False,
-                init_method=init_method,
-                bias=qkv_bias,
-                use_cpu_initialization=use_cpu_initialization,
-                params_dtype=params_dtype,
-                sequence_parallel=sequence_parallel)
+                self.v_proj = ColumnParallelLinear(
+                    hidden_size,
+                    projection_size_kv,
+                    gather_output=False,
+                    init_method=init_method,
+                    bias=qkv_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    params_dtype=params_dtype,
+                    sequence_parallel=sequence_parallel)
+            else:
+                self.wqkv = ColumnParallelLinear(
+                    hidden_size,
+                    projection_size + projection_size_kv * 2,
+                    gather_output=False,
+                    init_method=init_method,
+                    bias=qkv_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    params_dtype=params_dtype,
+                    sequence_parallel=sequence_parallel)
         else:
             raise NotImplementedError("Not implementented for cross-attention")
 
@@ -397,14 +408,16 @@ class ParallelAttention(MegatronModule):
                 alibi=None):
         # hidden_states: [sq, b, h]
         assert self.attention_type == AttnType.self_attn
-        if self.sequence_parallel:
-            hidden_states = dist_env.gather_from_sequence_parallel_region(hidden_states,
-                                                                          tensor_parallel_output_grad=True,
-                                                                          buffer_name="dist_env")
         # sq, b, np * hn
-        query_layer, _ = self.q_proj(hidden_states)
-        key_layer, _ = self.k_proj(hidden_states)
-        value_layer, _ = self.v_proj(hidden_states)
+        if not self.qkv_pack:
+            query_layer, _ = self.q_proj(hidden_states)
+            key_layer, _ = self.k_proj(hidden_states)
+            value_layer, _ = self.v_proj(hidden_states)
+        else:
+            qkv_layer, _ = self.wqkv(hidden_states)
+            query_layer = qkv_layer[..., :self.q_size]
+            key_layer = qkv_layer[..., self.q_size:(self.q_size + self.kv_size)]
+            value_layer = qkv_layer[..., (self.q_size + self.kv_size):]
         bs, sq, sk = query_layer.shape[1], query_layer.shape[0], key_layer.shape[0]
         nq_head = self.num_attention_heads_per_partition
         nk_head = self.num_kv_attention_heads_per_partition
@@ -642,6 +655,7 @@ class ParallelTransformerLayer(MegatronModule):
                  initializer=None,
                  output_initializer=None,
                  use_matmul=False,
+                 qkv_pack=False,
                  attention_qkv_bias=False,
                  attention_o_bias=False,
                  ):
@@ -684,6 +698,7 @@ class ParallelTransformerLayer(MegatronModule):
             sequence_parallel=sequence_parallel,
             use_flash_attn=use_flash_attn,
             use_matmul=use_matmul,
+            qkv_pack=qkv_pack,
             qkv_bias=attention_qkv_bias,
             o_bias=attention_o_bias
         )

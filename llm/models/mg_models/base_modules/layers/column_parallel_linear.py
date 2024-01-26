@@ -1,12 +1,162 @@
 import torch
-import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.parameter import Parameter
+from typing import Optional
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 from llm.utils.env import dist_env
 from llm.utils.model.initializer import set_tensor_model_parallel_attributes
 from llm.utils.model.initializer import _initialize_affine_weight_gpu
 from llm.utils.model.initializer import _initialize_affine_weight_cpu
+
+
+class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
+    """See linear_with_grad_accumulation_and_async_allreduce"""
+
+    @staticmethod
+    @custom_fwd
+    def forward(
+        ctx,
+        input,
+        weight,
+        bias,
+        sequence_parallel,
+    ):
+        ctx.save_for_backward(input, weight)
+        ctx.use_bias = bias is not None
+        ctx.sequence_parallel = sequence_parallel
+
+        if sequence_parallel:
+            world_size = dist_env.get_tensor_model_parallel_world_size()
+            dim_size = list(input.size())
+            dim_size[0] = dim_size[0] * world_size
+
+            all_gather_buffer = dist_env.get_global_memory_buffer().get_tensor(dim_size, input.dtype, "dist_env")
+            torch.distributed._all_gather_base(
+                all_gather_buffer, input, group=dist_env.get_tensor_model_parallel_group()
+            )
+            total_input = all_gather_buffer
+        else:
+            total_input = input
+
+        output = torch.matmul(total_input, weight.t())
+        if bias is not None:
+            output = output + bias
+        return output
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_output):
+        input, weight = ctx.saved_tensors
+        use_bias = ctx.use_bias
+
+        if ctx.sequence_parallel:
+            world_size = dist_env.get_tensor_model_parallel_world_size()
+            dim_size = list(input.size())
+            dim_size[0] = dim_size[0] * world_size
+
+            all_gather_buffer = dist_env.get_global_memory_buffer().get_tensor(dim_size, input.dtype, "dist_env")
+            handle = torch.distributed._all_gather_base(
+                all_gather_buffer, input, group=dist_env.get_tensor_model_parallel_group(), async_op=True
+            )
+
+            # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
+            # gather is scheduled before the input gradient computation
+            total_input = all_gather_buffer
+        else:
+            total_input = input
+        grad_input = grad_output.matmul(weight)
+
+        if ctx.sequence_parallel:
+            handle.wait()
+
+        # Doing gather + slicing during the NeMo forward pass can make this tensor
+        # not be contiguous. PyTorch only checks if the tensor is contiguous, and only
+        # clones it if it's not contiguous:
+        # https://github.com/pytorch/pytorch/blob/c47cf9bc7f9e02f649ab4ed53fe4d35732c92ab6/torch/_refs/__init__.py#L2761
+        grad_output = grad_output.contiguous()
+        # Convert the tensor shapes to 2D for execution compatibility
+        if grad_output.dim() == 3:
+            grad_output = grad_output.view(
+                grad_output.shape[0] * grad_output.shape[1], grad_output.shape[2]
+            )
+            total_input = total_input.view(
+                total_input.shape[0] * total_input.shape[1], total_input.shape[2]
+            )
+
+        if ctx.sequence_parallel:
+            dim_size = list(input.size())
+            sub_grad_input = torch.empty(
+                dim_size, dtype=input.dtype, device=torch.cuda.current_device(), requires_grad=False
+            )
+            # reduce_scatter
+            handle = torch.distributed._reduce_scatter_base(
+                sub_grad_input, grad_input, group=dist_env.get_tensor_model_parallel_group(), async_op=True
+            )
+            # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
+            # reduce scatter is scheduled before the weight gradient computation
+
+        grad_weight = grad_output.t().matmul(total_input)
+        grad_bias = grad_output.sum(dim=0) if use_bias else None
+
+        if ctx.sequence_parallel:
+            handle.wait()
+            return sub_grad_input, grad_weight, grad_bias, None, None, None
+
+        return grad_input, grad_weight, grad_bias, None
+
+
+def linear_with_grad_accumulation_and_async_allreduce(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    sequence_parallel: bool,
+) -> torch.Tensor:
+    """Linear layer execution with asynchronous communication and
+    gradient accumulation fusion in backprop.
+
+    This has the option to accumulate the result of backprop
+    calculation into an existing gradient buffer, preventing the need
+    to do an additional addition kernel after the gradient
+    calculation.
+
+    Additionally, the tensor parallel all reduce of the input
+    gradients can be done asynchronously with the calculation of
+    the weight gradients.
+
+    In the case of sequence parallelism, the reduce scatter of the
+    input gradients is done asynchronously with the calcluation of the
+    weight gradients.
+
+    Use of this module requires that the environment variable
+    CUDA_DEVICE_MAX_CONNECTIONS=1. There are a few collective
+    operations, noted in the code, that should be scheduled before
+    compute kernels to overlap the communication with the computation,
+    which is necessary for a speedup but not for correctness so that
+    ordering isn't imposed by the scheduler. Setting
+    CUDA_DEVICE_MAX_CONNECTIONS=1 forces the kernels to be scheduled
+    in the order they are called.
+
+    Arguments:
+
+    input (torch.Tensor required): input like torch.nn.functional.linear
+
+    weight (torch.Tensor required): weight like torch.nn.functional.linear
+
+    bias (torch.Tensor optional): bias like torch.nn.functional.linear
+
+    sequence_parallel (bool required): Indicates that sequence
+        parallelism is used and thus in the forward pass the input is
+        all gathered, and the backward pass the input gradients are
+        reduce scattered.
+    """
+    args = [
+        input,
+        weight,
+        bias,
+        sequence_parallel,
+    ]
+    return LinearWithGradAccumulationAndAsyncCommunication.apply(*args)
 
 
 class ColumnParallelLinear(torch.nn.Module):
@@ -105,7 +255,7 @@ class ColumnParallelLinear(torch.nn.Module):
         # Matrix multiply.
 
         bias = self.bias if not self.skip_bias_add else None
-        output_parallel = F.linear(input_parallel, self.weight, bias)
+        output_parallel = linear_with_grad_accumulation_and_async_allreduce(input_parallel, self.weight, bias, self.sequence_parallel)
         if self.gather_output:
             # All-gather across the partitions.
             assert not self.sequence_parallel

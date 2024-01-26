@@ -109,7 +109,7 @@ def qwen_to_llama(dt, model):
     return output_dt
 
 
-def internlm2_to_llama2(dt, model):
+def internlm2_to_llama2(dt, model, pack=False):
     output_dt = {}
     n_heads = model.transformer_layer_params['num_attention_heads']
     n_kv_heads = model.transformer_layer_params['num_kv_attention_heads']
@@ -132,9 +132,12 @@ def internlm2_to_llama2(dt, model):
                 q = qkv[:, :gs, ...].reshape(-1, hid_size)
                 k = qkv[:, -2, ...].reshape(-1, hid_size)
                 v = qkv[:, -1, ...].reshape(-1, hid_size)
-                output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = q
-                output_dt[f"module.{layer_id + 3}.self_attn.k_proj.weight"] = k
-                output_dt[f"module.{layer_id + 3}.self_attn.v_proj.weight"] = v
+                if pack:
+                    output_dt[f"module.{layer_id + 3}.self_attn.wqkv.weight"] = [q, k, v]
+                else:
+                    output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = q
+                    output_dt[f"module.{layer_id + 3}.self_attn.k_proj.weight"] = k
+                    output_dt[f"module.{layer_id + 3}.self_attn.v_proj.weight"] = v
             if 'attention.wo' in key:
                 output_dt[f'module.{layer_id + 3}.self_attn.o_proj.weight'] = dt[key]
             if 'feed_forward.w1' in key:
@@ -152,7 +155,7 @@ def internlm2_to_llama2(dt, model):
     return output_dt
 
 
-def hf_to_megatron_llama(dt, model):
+def hf_to_megatron_llama(dt, model, pack=False):
     output_dt = {}
     num_layers = model.model_kwargs['num_layers']
     for key in dt.keys():
@@ -165,10 +168,18 @@ def hf_to_megatron_llama(dt, model):
         elif "layers" in key:
             layer_id = int(key.split('.')[2])
             if 'self_attn.q_proj' in key:
-                if 'weight' in key:
-                    output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = dt[key]
+                if pack:
+                    assert (key.replace("q_proj", "k_proj") in dt) and (key.replace("q_proj", "v_proj") in dt), "Pack mode only suport q_proj, k_proj, v_proj in one checkpoint, please re-formula your checkpoint file."      # noqa
+                    wqkv_val = [dt[key], dt[key.replace("q_proj", "k_proj")], dt[key.replace("q_proj", "v_proj")]]
+                    if 'weight' in key:
+                        output_dt[f"module.{layer_id + 3}.self_attn.wqkv.weight"] = wqkv_val
+                    else:
+                        output_dt[f"module.{layer_id + 3}.self_attn.wqkv.bias"] = wqkv_val
                 else:
-                    output_dt[f"module.{layer_id + 3}.self_attn.q_proj.bias"] = dt[key]
+                    if 'weight' in key:
+                        output_dt[f"module.{layer_id + 3}.self_attn.q_proj.weight"] = dt[key]
+                    else:
+                        output_dt[f"module.{layer_id + 3}.self_attn.q_proj.bias"] = dt[key]
             if 'self_attn.k_proj' in key:
                 if 'weight' in key:
                     output_dt[f'module.{layer_id + 3}.self_attn.k_proj.weight'] = dt[key]
@@ -232,12 +243,19 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
     else:
         dt = torch.load(filename, map_location='cpu')
 
-    if pretrain_type == 'internlm2':
-        dt = internlm2_to_llama2(dt, model)
+    is_pack = False
+    if 'internlm2' in pretrain_type:
+        assert pretrain_type in ["internlm2", "internlm2_pack"]
+        if pretrain_type == "internlm2_pack":
+            is_pack = True
+        dt = internlm2_to_llama2(dt, model, pack=is_pack)
     elif pretrain_type == "qwen":
         dt = qwen_to_llama(dt, model)
-    elif pretrain_type == 'llama':
-        dt = hf_to_megatron_llama(dt, model)
+    elif 'llama' in pretrain_type:
+        assert pretrain_type in ["llama", "llama_pack"]
+        if pretrain_type == "llama_pack":
+            is_pack = True
+        dt = hf_to_megatron_llama(dt, model, pack=is_pack)
     else:
         logger.info(f"{pretrain_type} is not be supported")
 
@@ -251,8 +269,17 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
             start, stop = get_start_end(param.shape[0], tp_world_size, tp_rank)
             tensor = slice_[start:stop]
         elif isinstance(module, ColumnParallelLinear) and ((not lora_mode) or ('lora_B' in name)):
-            start, stop = get_start_end(param.shape[0], tp_world_size, tp_rank)
-            tensor = slice_[start:stop]
+            if is_pack and isinstance(slice_, list):
+                q_start, q_stop = get_start_end(slice_[0].shape[0] // tp_world_size, tp_world_size, tp_rank)
+                k_start, k_stop = get_start_end(slice_[1].shape[0] // tp_world_size, tp_world_size, tp_rank)
+                v_start, v_stop = get_start_end(slice_[2].shape[0] // tp_world_size, tp_world_size, tp_rank)
+                q_slice_ = slice_[0][q_start:q_stop]
+                k_slice_ = slice_[1][k_start:k_stop]
+                v_slice_ = slice_[2][v_start:v_stop]
+                tensor = torch.cat([q_slice_, k_slice_, v_slice_], dim=0)
+            else:
+                start, stop = get_start_end(param.shape[0], tp_world_size, tp_rank)
+                tensor = slice_[start:stop]
         elif isinstance(module, RowParallelLinear) and ((not lora_mode) or ('lora_A' in name)):
             if len(param.shape) == 1:  # for bias
                 tensor = slice_
