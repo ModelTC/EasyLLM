@@ -67,6 +67,10 @@ WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN = [
     "word_embeddings.weight",
 ]
 
+WEIGHTS_WITH_PACK_COLUMN_PARALLELISM_CONTAIN = [
+    "self_attn.wqkv.weight",
+]
+
 LORA_WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN = [
     "mlp.gate_proj.lora_B_weight",
     "mlp.up_proj.lora_B_weight",
@@ -246,6 +250,8 @@ def load_save_func(layers_tp,
                    tp_size=1,
                    output_dir='./',
                    n_layer=100,
+                   n_heads=48,
+                   num_key_value_heads=8,
                    param_counts=[],
                    index_dict={"weight_map": {}}):
     special_layers = [1, n_layer + 4, n_layer + 5]
@@ -265,6 +271,16 @@ def load_save_func(layers_tp,
             val /= tp_size
         elif name in WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN:
             val = torch.cat([tp_dt[s][name] for s in range(tp_size)], dim=0)
+        elif name in WEIGHTS_WITH_PACK_COLUMN_PARALLELISM_CONTAIN:
+            gs = (n_heads // num_key_value_heads)
+            g_dims = tp_dt[0][name].shape[0] // (gs + 2)
+            q_proj_val = torch.cat([tp_dt[s][name][:(g_dims * gs)] for s in range(tp_size)], dim=0)
+            k_proj_val = torch.cat([tp_dt[s][name][(g_dims * gs):(g_dims * (gs + 1))] for s in range(tp_size)], dim=0)
+            v_proj_val = torch.cat([tp_dt[s][name][(g_dims * (gs + 1)):] for s in range(tp_size)], dim=0)
+            state_dict[key.replace("wqkv", "q_proj")] = q_proj_val
+            state_dict[key.replace("wqkv", "k_proj")] = k_proj_val
+            state_dict[key.replace("wqkv", "v_proj")] = v_proj_val
+            continue
         elif name in WEIGHTS_WITH_ROW_PARALLELISM_CONTAIN:
             val = torch.cat([tp_dt[s][name] for s in range(tp_size)], dim=1)
         else:
@@ -462,6 +478,8 @@ def write_model_fast(args):
                            tp_size=tp_size,
                            output_dir=model_path,
                            n_layer=n_layer,
+                           n_heads=args.n_heads,
+                           num_key_value_heads=args.num_key_value_heads,
                            param_counts=param_counts,
                            index_dict=index_dict)
     worker = int(os.environ.get('LOADWORKER', 8))
