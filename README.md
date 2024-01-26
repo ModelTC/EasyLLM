@@ -18,6 +18,13 @@ Built upon Megatron-Deepspeed and HuggingFace Trainer, EasyLLM has reorganized t
     export PYTHONPATH=/path/to/DeepSpeed:$PYTHONPATH
     ```
 
+  - Install package in development mode
+
+    ```shell
+    pip install -e . -v
+    ```
+
+
 ## Train
 
 [Train Example](./docs/train.md)
