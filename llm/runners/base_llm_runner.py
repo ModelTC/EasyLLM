@@ -29,8 +29,8 @@ from llm.data import build_tokenizer, build_batch_pipe_fn, build_data_iterator
 from llm.models.mg_models import build_model, log_trainable_params, get_layer_info
 from llm.models.mg_models import unwrap_model, Float16Module
 from llm.models.mg_models import generate_samples_interactive, generate_samples_eval
-from tools.utils.dataset import EvalDataset, LocalEvalDataset
-from tools.utils.prompt import text_postprocess, save_results, evaluate
+from llm.utils.tools.dataset import EvalDataset, LocalEvalDataset
+from llm.utils.tools.prompt import text_postprocess, save_results, evaluate
 
 _TRAIN_START_TIME = time.time()
 

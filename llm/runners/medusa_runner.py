@@ -4,7 +4,7 @@ from llm.utils.general.parser_helper import parse_args
 from llm.utils.env.hf_dist_helper import setup_distributed
 from llm.data.nlp_transforms import build_augmentation, SenseTokenization
 from llm.utils.general.log_helper import default_logger as logger
-from tools.utils.prompt import text_postprocess, save_results, evaluate
+from llm.utils.tools.prompt import text_postprocess, save_results, evaluate
 import torch
 import os
 from tqdm import tqdm
@@ -115,7 +115,7 @@ class MedusaRunner(HFRunner):
                     logger.info("\nContext: {}".format(ori_raw_text))
                     logger.info("\nEasyLLM: {}".format(output))
             elif generate_mode == "eval":
-                from tools.utils.dataset import EvalDataset, LocalEvalDataset
+                from llm.utils.tools.dataset import EvalDataset, LocalEvalDataset
                 cfg_medusa_infer = self.config.get("medusa_infer_config", {})
                 samples, history_metas = [], []
                 # load dataset

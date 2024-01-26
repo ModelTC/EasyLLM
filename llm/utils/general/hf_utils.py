@@ -10,8 +10,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from llm.utils.general.log_helper import default_logger as logger
 from llm.utils.env.hf_dist_helper import get_world_size, get_rank, dist_barrier, all_gather
-from tools.utils.prompt import text_postprocess, save_results, evaluate
-from tools.utils.dataset import EvalDataset, SampleEvalDataset
+from llm.utils.tools.prompt import text_postprocess, save_results, evaluate
+from llm.utils.tools.dataset import EvalDataset, SampleEvalDataset
 
 
 def get_ceph_path(path):

@@ -7,8 +7,8 @@ from llm.utils.general.yaml_loader import load_yaml
 from llm.data.nlp_transforms import build_augmentation
 from llm.utils.env.hf_dist_helper import setup_distributed, dist_barrier, all_gather, get_rank
 
-from utils.prompt import text_postprocess, save_results, evaluate
-from utils.dataset import EvalDataset, SampleEvalDataset
+from llm.utils.tools.prompt import text_postprocess, save_results, evaluate
+from llm.utils.tools.dataset import EvalDataset, SampleEvalDataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', default=None, type=str)
