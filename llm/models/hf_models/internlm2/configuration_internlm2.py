@@ -1,10 +1,7 @@
 # coding=utf-8
-# Copyright (c) InternLM. All rights reserved.
+# Copyright (c) The InternLM team and The HuggingFace Inc. team. All rights reserved.
 #
-# This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-# and OPT implementations in this library. It has been modified from its
-# original forms to accommodate minor architectural differences compared
-# to GPT-NeoX and OPT used by the Meta AI team that trained the model.
+# This code is based on transformers/src/transformers/models/llama/configuration_llama.py
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,30 +14,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" InternLM model configuration"""
+""" InternLM2 model configuration"""
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
-INTERNLM_PRETRAINED_CONFIG_ARCHIVE_MAP = {}
+INTERNLM2_PRETRAINED_CONFIG_ARCHIVE_MAP = {}
 
 
-class InternLMConfig(PretrainedConfig):
+# Modified from transformers.model.llama.configuration_llama.LlamaConfig
+class InternLM2Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`InternLMModel`]. It is used to instantiate
-    an InternLM model according to the specified arguments, defining the model architecture. Instantiating a
-    configuration with the defaults will yield a similar configuration to that of the InternLM-7B.
-
+    This is the configuration class to store the configuration of a [`InternLM2Model`]. It is used to instantiate
+    an InternLM2 model according to the specified arguments, defining the model architecture. Instantiating a
+    configuration with the defaults will yield a similar configuration to that of the InternLM2-7B.
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
-
-
     Args:
         vocab_size (`int`, *optional*, defaults to 32000):
-            Vocabulary size of the InternLM model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`InternLMModel`]
+            Vocabulary size of the InternLM2 model. Defines the number of different tokens that can be represented by the
+            `inputs_ids` passed when calling [`InternLM2Model`]
         hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
         intermediate_size (`int`, *optional*, defaults to 11008):
@@ -72,20 +67,8 @@ class InternLMConfig(PretrainedConfig):
         tie_word_embeddings(`bool`, *optional*, defaults to `False`):
             Whether to tie weight embeddings
         Example:
-
-    ```python
-    >>> from transformers import InternLMModel, InternLMConfig
-
-    >>> # Initializing a InternLM internlm-7b style configuration
-    >>> configuration = InternLMConfig()
-
-    >>> # Initializing a model from the internlm-7b style configuration
-    >>> model = InternLMModel(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
-    model_type = "internlm"
+    """
+    model_type = "internlm2"
     _auto_class = "AutoConfig"
 
     def __init__(  # pylint: disable=W0102
@@ -106,7 +89,9 @@ class InternLMConfig(PretrainedConfig):
         eos_token_id=2,
         tie_word_embeddings=False,
         bias=True,
-        rotary={"base": 10000, "type": "dynamic"},  # pylint: disable=W0102
+        rope_theta=10000,
+        rope_scaling=None,
+        attn_implementation="eager",
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -115,6 +100,7 @@ class InternLMConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
+        self.bias = bias
 
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
@@ -124,8 +110,13 @@ class InternLMConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
-        self.bias = bias
-        self.rotary = rotary
+        self.rope_theta = rope_theta
+        self.rope_scaling = rope_scaling
+        self._rope_scaling_validation()
+
+        self.attn_implementation = attn_implementation
+        if self.attn_implementation is None:
+            self.attn_implementation = "eager"
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
@@ -133,3 +124,24 @@ class InternLMConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+
+    def _rope_scaling_validation(self):
+        """
+        Validate the `rope_scaling` configuration.
+        """
+        if self.rope_scaling is None:
+            return
+
+        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 2:
+            raise ValueError(
+                "`rope_scaling` must be a dictionary with with two fields, `type` and `factor`, "
+                f"got {self.rope_scaling}"
+            )
+        rope_scaling_type = self.rope_scaling.get("type", None)
+        rope_scaling_factor = self.rope_scaling.get("factor", None)
+        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
+            raise ValueError(
+                f"`rope_scaling`'s type field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
+            )
+        if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor < 1.0:
+            raise ValueError(f"`rope_scaling`'s factor field must be a float >= 1, got {rope_scaling_factor}")

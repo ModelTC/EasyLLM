@@ -1,6 +1,6 @@
 from ..utils.model_utils import get_model_cfg
 from .modeling_internlm2 import InternLM2ForCausalLM
-from .tokenization_internlm import InternLMTokenizer
+from .tokenization_internlm2 import InternLM2Tokenizer
 from llm.utils.general.registry_factory import TOKENIZER_REGISTRY
 from llm.utils.general.registry_factory import MODULE_ZOO_REGISTRY
 
@@ -18,4 +18,4 @@ def build_model(**cfg):
 
 
 MODULE_ZOO_REGISTRY.register("InternLM2ForCausalLM", build_model)
-TOKENIZER_REGISTRY.register("InternLM2Tokenizer", InternLMTokenizer)
+TOKENIZER_REGISTRY.register("InternLM2Tokenizer", InternLM2Tokenizer)

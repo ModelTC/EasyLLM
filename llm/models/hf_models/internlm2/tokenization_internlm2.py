@@ -1,10 +1,7 @@
 # coding=utf-8
-# Copyright (c) InternLM. All rights reserved.
+# Copyright (c) The InternLM team and The HuggingFace Inc. team. All rights reserved.
 #
-# This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-# and OPT implementations in this library. It has been modified from its
-# original forms to accommodate minor architectural differences compared
-# to GPT-NeoX and OPT used by the Meta AI team that trained the model.
+# This code is based on transformers/src/transformers/models/llama/tokenization_llama.py
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tokenization classes for IntermLM."""
+"""Tokenization classes for InternLM."""
 import os
 from shutil import copyfile
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,10 +31,10 @@ VOCAB_FILES_NAMES = {"vocab_file": "./tokenizer.model"}
 PRETRAINED_VOCAB_FILES_MAP = {}
 
 
-class InternLMTokenizer(PreTrainedTokenizer):
+# Modified from transformers.model.llama.tokenization_llama.LlamaTokenizer
+class InternLM2Tokenizer(PreTrainedTokenizer):
     """
-    Construct a InternLM tokenizer. Based on byte-level Byte-Pair-Encoding.
-
+    Construct a InternLM2 tokenizer. Based on byte-level Byte-Pair-Encoding.
     Args:
         vocab_file (`str`):
             Path to the vocabulary file.
@@ -78,8 +75,6 @@ class InternLMTokenizer(PreTrainedTokenizer):
             clean_up_tokenization_spaces=clean_up_tokenization_spaces,
             **kwargs,
         )
-
-        """ Initialization"""
 
     @property
     def no_prefix_space_tokens(self):
@@ -150,11 +145,9 @@ class InternLMTokenizer(PreTrainedTokenizer):
     def save_vocabulary(self, save_directory, filename_prefix: Optional[str] = None) -> Tuple[str]:
         """
         Save the vocabulary and special tokens file to a directory.
-
         Args:
             save_directory (`str`):
                 The directory in which to save the vocabulary.
-
         Returns:
             `Tuple(str)`: Paths to the files saved.
         """
@@ -196,7 +189,6 @@ class InternLMTokenizer(PreTrainedTokenizer):
         """
         Retrieve sequence ids from a token list that has no special tokens added. This method is called when adding
         special tokens using the tokenizer `prepare_for_model` method.
-
         Args:
             token_ids_0 (`List[int]`):
                 List of IDs.
@@ -204,7 +196,6 @@ class InternLMTokenizer(PreTrainedTokenizer):
                 Optional second list of IDs for sequence pairs.
             already_has_special_tokens (`bool`, *optional*, defaults to `False`):
                 Whether or not the token list is already formatted with special tokens for the model.
-
         Returns:
             `List[int]`: A list of integers in the range [0, 1]: 1 for a special token, 0 for a sequence token.
         """
@@ -223,13 +214,11 @@ class InternLMTokenizer(PreTrainedTokenizer):
         """
         Create a mask from the two sequences passed to be used in a sequence-pair classification task. T5 does not make
         use of token type ids, therefore a list of zeros is returned.
-
         Args:
             token_ids_0 (`List[int]`):
                 List of IDs.
             token_ids_1 (`List[int]`, *optional*):
                 Optional second list of IDs for sequence pairs.
-
         Returns:
             `List[int]`: List of zeros.
         """
