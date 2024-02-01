@@ -194,6 +194,154 @@ class ToolParser(object):
         return results
 
 
+@PARSER_REGISTRY.register('intern_tools')
+class InternToolParser(object):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 ignore_index=-100,
+                 keep_all_keys=False,
+                 inference_mode=False,
+                 drop_meta=False,
+                 prompt_template={},
+                 use_system=True,
+                 use_knowledge=True,
+                 use_interpreter=True,
+                 ensure_ascii=True):
+        self.tokenizer = tokenizer
+        self.ignore_index = ignore_index
+        self.keep_all_keys = keep_all_keys
+        self.max_seq_length = max_seq_length
+        self.inference_mode = inference_mode
+        self.drop_meta = drop_meta
+        self.conversation_start = prompt_template.get("conversation_start", "<|im_start|>")
+        self.conversation_end = prompt_template.get("conversation_end", "<|im_end|>")
+        self.action_start = prompt_template.get("action_start", "<|action_start|>")
+        self.action_end = prompt_template.get("action_end", "<|action_end|>")
+        # plugin tools
+        self.plugin_prompt = prompt_template.get("plugin", "<|plugin|>")
+        # interpreter
+        self.interpreter_prompt = prompt_template.get("interpreter", "<|interpreter|>")
+
+        self.use_system = use_system
+        self.use_knowledge = use_knowledge
+        self.use_interpreter = use_interpreter
+        self.ensure_ascii = ensure_ascii
+
+    def __call__(self, meta):
+        if 'input' in meta:
+            messages = meta['input'].get('messages', [])
+            tools = meta['input'].get('tools', [])
+            interpreter = meta['input'].get('interpreter', [])
+        elif "messages" in meta:
+            messages = meta['messages']
+            tools = meta['tools']
+            interpreter = meta.get('interpreter', [])
+        else:
+            messages = meta
+            tools = []
+            interpreter = []
+        tokens = []
+        labels = []
+
+        tokens.extend([self.tokenizer.bos_token_id])
+        labels.extend([self.ignore_index])
+
+        conversation_messages = messages
+        if self.use_system:
+            if messages[0]['role'] == 'system' and messages[0]['content'] != '':
+                system = f"{self.conversation_start}system\n{messages[0]['content']}{self.conversation_end}\n"
+                tokenized_system = self.tokenizer(system, return_attention_mask=False,
+                                                  add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_system)
+                labels.extend([self.ignore_index] * len(tokenized_system))
+                # remove the system item
+                conversation_messages = messages[1:]
+
+        if self.use_interpreter and (len(interpreter) > 0):
+            assert (len(interpreter) == 1) and (interpreter[0]["name"] == "python_interpreter"), "Only support python interpreter now!"     # noqa
+            interpreter_str = f"{self.conversation_start}system name={self.interpreter_prompt}\n{interpreter[0]['description']}\n{self.conversation_end}\n"
+            tokenized_interpreter = self.tokenizer(interpreter_str, return_attention_mask=False, add_special_tokens=False)['input_ids']
+            tokens.extend(tokenized_interpreter)
+            labels.extend([self.ignore_index] * len(tokenized_interpreter))
+        if len(tools) > 0:
+            plugin_tools = []
+            for tool in tools:
+                if not (self.use_interpreter and (tool['function']['name'] == "python_interpreter")):
+                    plugin_tools.append(copy.deepcopy(tool['function']))
+            if len(plugin_tools) > 0:
+                plugin_tools_str = json.dumps(plugin_tools, ensure_ascii=self.ensure_ascii)
+                plugin_tools_str = f"{self.conversation_start}system name={self.plugin_prompt}\n{plugin_tools_str}\n{self.conversation_end}\n"
+                tokenized_plugin_tools = self.tokenizer(plugin_tools_str, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_plugin_tools)
+                labels.extend([self.ignore_index] * len(tokenized_plugin_tools))
+
+        for item in conversation_messages:
+            # assert item['role'] != 'system', "only allow system at the start of conversation"
+            if self.use_knowledge:
+                # do not support knowledge yet
+                raise NotImplementedError
+            if item['role'] == 'user':
+                user_info = f"{self.conversation_start}user\n{item['content']}{self.conversation_end}\n"
+                tokenized_user = self.tokenizer(user_info, return_attention_mask=False,
+                                                add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_user)
+                labels.extend([self.ignore_index] * len(tokenized_user))
+            if item['role'] == 'assistant':
+                assis_start = f"{self.conversation_start}assistant\n"
+                tokens_assistant_start = self.tokenizer(assis_start, return_attention_mask=False,
+                                                        add_special_tokens=False)['input_ids']
+                tokens.extend(tokens_assistant_start)
+                labels.extend([self.ignore_index] * len(tokens_assistant_start))
+
+                assis_info = ""
+                if item['content']:
+                    assis_info = item['content']
+
+                if 'tool_calls' in item and len(item['tool_calls']) > 0:
+                    assis_info += self.action_start
+                    for tool_call in item['tool_calls']:
+                        if self.use_interpreter and (tool_call['function']['name'] == "python_interpreter"):
+                            assis_info += f"{self.interpreter_prompt}\n{tool_call['function']['arguments']['code']}\n"      # noqa
+                        else:
+                            assis_info += f"{self.plugin_prompt}\n{json.dumps(tool_call['function'], ensure_ascii=self.ensure_ascii)}\n"
+                    assis_info += self.action_end
+
+                if not self.inference_mode:
+                    assis_info += f"{self.conversation_end}\n"
+                tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False,
+                                                     add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_assistant)
+                labels.extend(copy.deepcopy(tokenized_assistant))
+
+            if item['role'] == 'tool':
+                if self.use_interpreter and (item["name"] == "python_interpreter"):
+                    response_info = f"{self.conversation_start}environment name={self.interpreter_prompt}\n{item['content']}{self.conversation_end}\n"
+                else:
+                    response_info = f"{self.conversation_start}environment name={self.plugin_prompt}\n{item['content']}{self.conversation_end}\n"
+                tokenized_response = self.tokenizer(response_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                tokens.extend(tokenized_response)
+                labels.extend([self.ignore_index] * len(tokenized_response))
+        if self.inference_mode:
+            infer_tokens_assistant_prompt = self.tokenizer(f"{self.conversation_start}assistant\n", return_attention_mask=False,
+                                                           add_special_tokens=False)['input_ids']
+            tokens.extend(infer_tokens_assistant_prompt)
+            labels.extend([self.ignore_index] * len(infer_tokens_assistant_prompt))
+            return tokens, []
+        if self.keep_all_keys:
+            labels = copy.deepcopy(tokens)
+        else:
+            if self.drop_meta and len(tokens) > self.max_seq_length:
+                return None
+            # drop question to avoid no loss
+            tokens = tokens[-self.max_seq_length:]
+            labels = labels[-self.max_seq_length:]
+            input_ids = torch.LongTensor(tokens)
+            labels = torch.LongTensor(labels)
+            results = {'input_ids': input_ids, 'labels': labels}
+        return results
+
+
 @PARSER_REGISTRY.register('preprocess')
 class PreProcessParser(object):
     def __init__(self,
