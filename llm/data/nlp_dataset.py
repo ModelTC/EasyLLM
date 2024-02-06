@@ -197,11 +197,10 @@ class BaseNLPJsonDataset(Dataset):
     def __getitem__(self, idx):
         meta = self.get_meta(idx)
         while meta is None:
-            self.set_seed(idx)
-            new_idx = random.randint(0, len(self.metas) - 1)
-            if idx == new_idx:
-                continue
-            meta = self.get_meta(new_idx)
+            # self.set_seed(idx)
+            # new_idx = random.randint(0, len(self.metas) - 1)
+            idx = (idx + 100) % len(self.metas)
+            meta = self.get_meta(idx)
         return meta
 
     def __len__(self):
