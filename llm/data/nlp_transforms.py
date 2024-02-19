@@ -301,7 +301,7 @@ class InternToolParser(object):
                 if 'tool_calls' in item and len(item['tool_calls']) > 0:
                     assis_info += self.action_start
                     for tool_call in item['tool_calls']:
-                        if self.use_interpreter and 'name'in tool_call['function'] and tool_call['function']['name'] == "python_interpreter"):
+                        if self.use_interpreter and 'name'in tool_call['function'] and tool_call['function']['name'] == "python_interpreter":
                             assis_info += f"{self.interpreter_prompt}\n{tool_call['function']['arguments']['code']}\n"      # noqa
                         else:
                             assis_info += f"{self.plugin_prompt}\n{json.dumps(tool_call['function'], ensure_ascii=self.ensure_ascii)}\n"
