@@ -84,7 +84,7 @@ class ToolParser(object):
                  prompt_template={},
                  use_system=True,
                  use_knowledge=True,
-                 ensure_ascii=True):
+                 ensure_ascii=False):
         self.tokenizer = tokenizer
         self.ignore_index = ignore_index
         self.keep_all_keys = keep_all_keys
@@ -207,7 +207,8 @@ class InternToolParser(object):
                  use_system=True,
                  use_knowledge=True,
                  use_interpreter=True,
-                 ensure_ascii=True):
+                 ensure_ascii=False,
+                 tool_mode='merge'):
         self.tokenizer = tokenizer
         self.ignore_index = ignore_index
         self.keep_all_keys = keep_all_keys
@@ -227,6 +228,7 @@ class InternToolParser(object):
         self.use_knowledge = use_knowledge
         self.use_interpreter = use_interpreter
         self.ensure_ascii = ensure_ascii
+        self.tool_mode = tool_mode
 
     def __call__(self, meta):
         if 'input' in meta:
@@ -270,7 +272,14 @@ class InternToolParser(object):
                 if not (self.use_interpreter and (tool['function']['name'] == "python_interpreter")):
                     plugin_tools.append(copy.deepcopy(tool['function']))
             if len(plugin_tools) > 0:
-                plugin_tools_str = json.dumps(plugin_tools, ensure_ascii=self.ensure_ascii)
+                if self.tool_mode == 'merge':
+                    plugin_tools_str = json.dumps(plugin_tools, ensure_ascii=self.ensure_ascii)
+                else:
+                    plugin_tools_str = ''
+                    for p_idx, tool in enumerate(plugin_tools):
+                        plugin_tools_str += json.dumps(tool, ensure_ascii=self.ensure_ascii)
+                        if p_idx != len(plugin_tools) - 1:
+                            plugin_tools_str += '\n'
                 plugin_tools_str = f"{self.conversation_start}system name={self.plugin_prompt}\n{plugin_tools_str}\n{self.conversation_end}\n"
                 tokenized_plugin_tools = self.tokenizer(plugin_tools_str, return_attention_mask=False, add_special_tokens=False)['input_ids']
                 tokens.extend(tokenized_plugin_tools)
