@@ -36,7 +36,10 @@ from ..base_modules.layers import ColumnParallelLinear, RowParallelLinear
 import deepspeed
 
 from ..base_modules.layers.glu_activations import GLU_ACTIVATIONS
-from .positional_embeddings import RotaryEmbedding, apply_rotary_pos_emb_torch, apply_rotary_pos_emb
+from .positional_embeddings import (RotaryEmbedding,
+                                    apply_rotary_pos_emb_torch,
+                                    apply_rotary_pos_emb,
+                                    InternLM2DynamicNTKScalingRotaryEmbedding)
 
 from llm.models.hf_models.utils.flash_utils import FlashRotaryEmbedding
 # flags required to enable jit fusion kernels
@@ -397,6 +400,12 @@ class ParallelAttention(MegatronModule):
             )
         elif self.position_embedding_type == PositionEmbeddingType.flash:
             self.rotary_emb = FlashRotaryEmbedding(dim=self.hidden_size_per_attention_head)
+        elif self.position_embedding_type == PositionEmbeddingType.dynamicntk:
+            self.rotary_emb = InternLM2DynamicNTKScalingRotaryEmbedding(
+                self.hidden_size_per_attention_head,
+                precision=params_dtype,
+                **position_embedding_kwargs or {}
+            )
 
     def forward(self,
                 hidden_states,
@@ -422,7 +431,8 @@ class ParallelAttention(MegatronModule):
         nq_head = self.num_attention_heads_per_partition
         nk_head = self.num_kv_attention_heads_per_partition
         # Rotary embeddings
-        if self.position_embedding_type == PositionEmbeddingType.rotary:
+        if self.position_embedding_type == PositionEmbeddingType.rotary or \
+           self.position_embedding_type == PositionEmbeddingType.dynamicntk:
             # [sq, b, np, hn] -> [sq, b * np, hn]
             query_layer = query_layer.reshape(sq, bs * nq_head, -1)
             # [sk, b, np, hn] -> [sk, b * np, hn]

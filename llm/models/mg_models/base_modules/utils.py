@@ -92,7 +92,8 @@ def get_position_embedding_type(v):
     new_value = {'rotary': PositionEmbeddingType.rotary,
                  'absolute': PositionEmbeddingType.absolute,
                  'alibi': PositionEmbeddingType.alibi,
-                 'flash': PositionEmbeddingType.flash}[v]
+                 'flash': PositionEmbeddingType.flash,
+                 'dynamicntk': PositionEmbeddingType.dynamicntk}[v]
     return new_value
 
 

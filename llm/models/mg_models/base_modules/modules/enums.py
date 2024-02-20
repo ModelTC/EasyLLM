@@ -41,3 +41,4 @@ class PositionEmbeddingType(enum.Enum):
     absolute = 2
     alibi = 3
     flash = 4
+    dynamicntk = 5
