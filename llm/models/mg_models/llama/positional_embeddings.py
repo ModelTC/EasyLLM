@@ -51,6 +51,32 @@ class InternLM2DynamicNTKScalingRotaryEmbedding(RotaryEmbedding):
         self.dim = dim
         assert max_position_embeddings is not None
         self.max_position_embeddings = max_position_embeddings
+        self._set_cos_sin_cache(max_position_embeddings,
+                                torch.cuda.current_device())
+
+    def _set_cos_sin_cache(self, seq_len, device):
+        self.max_seq_len_cached = seq_len
+        if seq_len > self.max_position_embeddings:
+            base = self.base * (
+                (self.scale_factor * seq_len / self.max_position_embeddings) - (self.scale_factor - 1)
+            ) ** (self.dim / (self.dim - 2))
+            inv_freq = 1.0 / (base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
+            self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=torch.float32)
+        t = t / self.scale_factor
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(device))
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1).to(device)
+
+        if self.precision == torch.bfloat16:
+            emb = emb.float()
+
+        self.cos_cached = emb.cos()[:, None, :]
+        self.sin_cached = emb.sin()[:, None, :]
+        if self.precision == torch.bfloat16:
+            self.cos_cached = self.cos_cached.bfloat16()
+            self.sin_cached = self.sin_cached.bfloat16()
 
     def forward(self, x, seq_dim=1, seq_len=None):
         if seq_len is None:
@@ -58,25 +84,8 @@ class InternLM2DynamicNTKScalingRotaryEmbedding(RotaryEmbedding):
 
         device = x.device
         if self.max_seq_len_cached is None or (seq_len > self.max_seq_len_cached):
-            self.max_seq_len_cached = seq_len
-            base = self.base * (
-                (self.scale_factor * seq_len / self.max_position_embeddings) - (self.scale_factor - 1)
-            ) ** (self.dim / (self.dim - 2))
-            inv_freq = 1.0 / (base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
-            self.register_buffer("inv_freq", inv_freq, persistent=False)
-            t = torch.arange(self.max_seq_len_cached, device=device, dtype=torch.float32)
-            t = t / self.scale_factor
-            freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-            # Different from paper, but it uses a different permutation in order to obtain the same calculation
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            if self.precision == torch.bfloat16:
-                emb = emb.float()
-            # [sx, 1 (b * np), hn]
-            self.cos_cached = emb.cos()[:, None, :]
-            self.sin_cached = emb.sin()[:, None, :]
-            if self.precision == torch.bfloat16:
-                self.cos_cached = self.cos_cached.bfloat16()
-                self.sin_cached = self.sin_cached.bfloat16()
+            self._set_cos_sin_cache(seq_len, device)
+
         return self.cos_cached[:seq_len, ...], self.sin_cached[:seq_len, ...]
 
 
