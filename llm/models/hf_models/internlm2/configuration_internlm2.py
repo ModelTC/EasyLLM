@@ -116,7 +116,7 @@ class InternLM2Config(PretrainedConfig):
 
         self.attn_implementation = attn_implementation
         if self.attn_implementation is None:
-            self.attn_implementation = "eager"
+            self.attn_implementation = "flash_attention_2"
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,

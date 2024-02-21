@@ -6,6 +6,7 @@ from llm.utils.general.registry_factory import MODULE_ZOO_REGISTRY
 
 
 def build_model(**cfg):
+    cfg["model_type"] = "internlm2"
     model_cfg = get_model_cfg(cfg)
     model_path = model_cfg.pop("model_path")
     model = InternLM2ForCausalLM.from_pretrained(model_path, **model_cfg)

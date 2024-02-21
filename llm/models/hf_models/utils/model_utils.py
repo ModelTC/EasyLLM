@@ -31,6 +31,9 @@ def get_model_cfg(cfg):
     elif cfg.get("model_type", None) == "qwen":
         from ..qwen.configuration_qwen import QWenConfig
         hf_cfg = QWenConfig.from_pretrained(model_path, **config_kwargs)
+    elif cfg.get("model_type", None) == "internlm2":
+        from ..internlm2.configuration_internlm2 import InternLM2Config
+        hf_cfg = InternLM2Config.from_pretrained(model_path, **config_kwargs)
     else:
         hf_cfg = AutoConfig.from_pretrained(model_path, **config_kwargs)
 
