@@ -127,7 +127,7 @@ class ToolParser(object):
         for item in messages:
             if self.use_system:
                 if item['role'] == 'system' and item['content'] != '':
-                    system += f"{self.system_prompt}{item['content']}\n"
+                    system = f"{self.system_prompt}{item['content']}\n"
                     tokenized_system = self.tokenizer(system, return_attention_mask=False,
                                                       add_special_tokens=False)['input_ids']
                     tokens.extend(tokenized_system)
