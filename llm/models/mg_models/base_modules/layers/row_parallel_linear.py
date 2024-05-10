@@ -46,7 +46,8 @@ class RowParallelLinear(torch.nn.Module):
                  use_cpu_initialization=False,
                  params_dtype=torch.half,
                  sync_tp_duplicated_parameters=False,
-                 sequence_parallel=False
+                 sequence_parallel=False,
+                 num_attention_heads=None
                  ):
         super(RowParallelLinear, self).__init__()
 
@@ -64,9 +65,22 @@ class RowParallelLinear(torch.nn.Module):
         world_size = dist_env.get_tensor_model_parallel_world_size()
         assert input_size % world_size == 0, '{} is not divisible by {}'.format(
             input_size, world_size)
-        self.input_size_per_partition = input_size // world_size
+        # self.input_size_per_partition = input_size // world_size
+        if num_attention_heads is None:
+            self.input_size_per_partition = [input_size // world_size] * world_size
+        else:
+            part_size = input_size // num_attention_heads
+            self.input_size_per_partition = [num_attention_heads // world_size] * world_size
+            if num_attention_heads % world_size > 0:
+                v_mode = num_attention_heads % world_size
+                for idx in range(v_mode):
+                    self.input_size_per_partition[world_size - 1 - idx] += 1
+            for idx in range(len(self.input_size_per_partition)):
+                self.input_size_per_partition[idx] *= part_size
+        self.num_attention_heads = num_attention_heads
         self.skip_bias_add = skip_bias_add
         self.sequence_parallel = sequence_parallel
+        self.rank = dist_env.get_tensor_model_parallel_rank()
 
         # Parameters.
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
@@ -74,15 +88,15 @@ class RowParallelLinear(torch.nn.Module):
         # Initialize weight.
         if use_cpu_initialization:
             self.weight = Parameter(torch.empty(self.output_size,
-                                                self.input_size_per_partition,
+                                                self.input_size_per_partition[self.rank],
                                                 dtype=params_dtype))
             self.master_weight = _initialize_affine_weight_cpu(
                 self.weight, self.output_size, self.input_size,
-                self.input_size_per_partition, 1, init_method,
+                self.input_size_per_partition[self.rank], 1, init_method,
                 stride=stride, return_master_weight=keep_master_weight_for_test)
         else:
             self.weight = Parameter(torch.empty(
-                self.output_size, self.input_size_per_partition,
+                self.output_size, self.input_size_per_partition[self.rank],
                 device=torch.cuda.current_device(), dtype=params_dtype))
             _initialize_affine_weight_gpu(self.weight, init_method,
                                           partition_dim=1, stride=stride)

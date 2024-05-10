@@ -10,12 +10,18 @@ from llm.utils.general.log_helper import default_logger as logger
 
 @LOSS_REGISTRY.register('softmax_cross_entropy')
 class CrossEntropy(object):
-    def __init__(self, loss_on_targets_only=False, reweight_loss_based_on_position_frequency=False,
-                 is_prefix=True, cut_size=None, **kwargs):
+    def __init__(self,
+                 loss_on_targets_only=False,
+                 reweight_loss_based_on_position_frequency=False,
+                 is_prefix=True,
+                 cut_size=None,
+                 packed_mean_loss=False,
+                 **kwargs):
         self.loss_on_targets_only = loss_on_targets_only
         self.reweight_loss_based_on_position_frequency = reweight_loss_based_on_position_frequency
         self.is_prefix = is_prefix
         self.cut_size = cut_size
+        self.packed_mean_loss = packed_mean_loss
 
     def get_expected_number_of_tokens(self, labels, loss_mask):
         ignore_mask = (labels == IGNORE_INDEX)
@@ -45,18 +51,45 @@ class CrossEntropy(object):
             expected_number_of_tokens = loss_mask.sum()
         return expected_number_of_tokens, loss_mask
 
-    def __call__(self, output, labels):
-        labels, loss_mask = labels[0], labels[1]
-        if (labels == -100).all():
-            bs, s = labels.shape
+    def __call__(self, inputs, labels):
+        if len(labels) == 3:
+            labels, loss_mask, cu_seqlens = labels[0], labels[1], labels[2]
+        else:
+            labels, loss_mask = labels[0], labels[1]
+            cu_seqlens = None
+        output, loss_mask, labels, cu_seqlens = inputs[0], inputs[1], inputs[2], inputs[3]
+        if ((labels == -100).sum() == labels.shape[1]):
+            bs, d = labels.shape
             ignore_mask = (labels != -100).view(-1)
-            loss = output.view(bs * s, -1)[ignore_mask].sum()
+            loss = output.view(bs * d, -1)[ignore_mask].sum()
             return loss
+
         losses = vocab_parallel_cross_entropy(output.contiguous().float(),
                                               labels, self.cut_size)
-        expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
+        if cu_seqlens is not None:
+            bs = labels.shape[0]
+            loss = []
+            for b in range(bs):
+                single_cu_seqlen = cu_seqlens[b]
+                single_losses = losses[b]
+                single_labels = labels[b]
+                single_loss_mask = loss_mask[b]
+                b_loss = 0.
+                for idx in range(1, len(single_cu_seqlen)):
+                    start, end = single_cu_seqlen[idx - 1], single_cu_seqlen[idx]
+                    single_losses_ = single_losses[start:end]
+                    single_labels_ = single_labels[start:end].unsqueeze(0)
+                    single_loss_mask_ = single_loss_mask[start:end].unsqueeze(0)
 
-        loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
+                    expected_number_of_tokens, single_loss_mask_ = self.get_expected_number_of_tokens(single_labels_, single_loss_mask_)
+                    b_loss += torch.sum(single_losses_.view(-1) * single_loss_mask_) / max(1, expected_number_of_tokens)
+                if self.packed_mean_loss:
+                    b_loss /= (len(single_cu_seqlen) - 1)
+                loss.append(b_loss)
+            loss = sum(loss)
+        else:
+            expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
+            loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
         return loss
 
 

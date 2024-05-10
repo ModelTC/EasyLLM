@@ -314,6 +314,12 @@ def build_data_loader(cfg_data, tokenizer):
     cfg_data['batch_sampler']['kwargs'].update({'total_samples': len(dataset),
                                                 'data_parallel_rank': dist_env.get_data_parallel_rank(),
                                                 'data_parallel_size': dist_env.get_data_parallel_world_size()})
+    if cfg_data['batch_sampler']['type'] == "megatron_length_group":
+        lengths = []
+        for item in dataset.datasets:
+            lengths = lengths + item.length
+        cfg_data['batch_sampler']['kwargs']['lengths'] = lengths
+
     batch_sampler = build_batch_sampler(cfg_data['batch_sampler'])
     batch_collator = build_batch_collator(cfg_data['batch_collector'], tokenizer)
     if 'kwargs' not in cfg_data['data_loader']:

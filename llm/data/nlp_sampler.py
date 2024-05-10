@@ -279,7 +279,7 @@ class LengthGroupedSampler(Sampler):
             indices = indices[: self.total_size]
         assert len(indices) == self.total_size
 
-        indices = indices[self.rank : self.total_size : self.num_replicas]
+        indices = indices[self.rank: self.total_size: self.num_replicas]
         assert len(indices) == self.num_samples
 
         return iter(indices)
@@ -289,6 +289,113 @@ class LengthGroupedSampler(Sampler):
 
     def set_epoch(self, epoch):
         self.epoch = epoch
+
+
+@BATCH_SAMPLER_REGISTRY.register('megatron_length_group')
+class MegatronLengthGroupSampler:
+    def __init__(self, total_samples, consumed_samples, micro_batch_size,
+                 data_parallel_rank, data_parallel_size, lengths=None, seed=233):
+        # Keep a copy of input params for later use.
+        self.total_samples = total_samples
+        self.consumed_samples = consumed_samples
+        self.micro_batch_size = micro_batch_size
+        self.data_parallel_rank = data_parallel_rank
+        self.data_parallel_size = data_parallel_size
+        self.micro_batch_times_data_parallel_size = \
+            self.micro_batch_size * data_parallel_size
+        self.last_batch_size = \
+            self.total_samples % self.micro_batch_times_data_parallel_size
+
+        # Sanity checks.
+        assert self.total_samples > 0, \
+            'no sample to consume: {}'.format(self.total_samples)
+        assert self.micro_batch_size > 0
+        assert data_parallel_size > 0
+        assert self.data_parallel_rank < data_parallel_size, \
+            'data_parallel_rank should be smaller than data size: {}, ' \
+            '{}'.format(self.data_parallel_rank, data_parallel_size)
+
+        if isinstance(lengths, str):
+            with open(lengths, "r") as f:
+                lengths = json.load(f)["lengths"]
+
+        if isinstance(lengths, torch.Tensor):
+            lengths = lengths.tolist()
+
+        self.lengths = lengths
+        self.num_samples = math.ceil(len(self.lengths) / (data_parallel_size * self.micro_batch_size))
+        self.total_size = self.num_samples * data_parallel_size * self.micro_batch_size
+        self.seed = seed
+
+    # copy from https://github.com/haotian-liu/LLaVA/blob/main/llava/train/llava_trainer.py#L38
+    def split_to_even_chunks(self, indices, lengths, num_chunks):
+        """
+        Split a list of indices into `chunks` chunks of roughly equal lengths.
+        """
+
+        if len(indices) % num_chunks != 0:
+            return [indices[i::num_chunks] for i in range(num_chunks)]
+
+        num_indices_per_chunk = len(indices) // num_chunks
+
+        chunks = [[] for _ in range(num_chunks)]
+        chunks_lengths = [0 for _ in range(num_chunks)]
+        for index in indices:
+            shortest_chunk = chunks_lengths.index(min(chunks_lengths))
+            chunks[shortest_chunk].append(index)
+            chunks_lengths[shortest_chunk] += lengths[index]
+            if len(chunks[shortest_chunk]) == num_indices_per_chunk:
+                chunks_lengths[shortest_chunk] = float('inf')
+
+        return chunks
+
+    # copy from https://github.com/haotian-liu/LLaVA/blob/main/llava/train/llava_trainer.py#L88
+    def get_length_grouped_indices(self, lengths, batch_size, world_size, generator=None, merge=True):
+        # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
+        indices = torch.randperm(len(lengths), generator=generator)
+        megabatch_size = world_size * batch_size
+        megabatches = [indices[i: i + megabatch_size].tolist() for i in range(0, len(lengths), megabatch_size)]
+        megabatches = [sorted(megabatch, key=lambda i: lengths[i], reverse=True) for megabatch in megabatches]
+        megabatches = [self.split_to_even_chunks(megabatch, lengths, world_size) for megabatch in megabatches]
+
+        return [i for megabatch in megabatches for batch in megabatch for i in batch]
+
+    def __len__(self):
+        return self.total_samples
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed)
+        indices = self.get_length_grouped_indices(self.lengths, self.micro_batch_size, self.data_parallel_size, generator=g)
+
+        active_indices = indices + indices[: (self.total_size - len(indices))]
+        active_indices_split = []
+        start = self.data_parallel_rank * self.micro_batch_size
+        stop = (self.data_parallel_rank + 1) * self.micro_batch_size
+        while start < len(active_indices):
+            if stop <= len(active_indices):
+                active_indices_split += active_indices[start:stop]
+            else:
+                active_indices_split += active_indices[start:]
+            start += self.data_parallel_size * self.micro_batch_size
+            stop += self.data_parallel_size * self.micro_batch_size
+
+        current_epoch_samples = self.consumed_samples % len(active_indices)
+        assert current_epoch_samples % self.micro_batch_times_data_parallel_size == 0
+
+        # data sharding and random sampling
+        bucket_offset = current_epoch_samples // self.data_parallel_size
+
+        idx_range = active_indices_split[bucket_offset:]
+
+        batch = []
+        # Last batch if not complete will be dropped.
+        for idx in idx_range:
+            batch.append(idx)
+            if len(batch) == self.micro_batch_size:
+                self.consumed_samples += self.micro_batch_times_data_parallel_size
+                yield batch
+                batch = []
 
 
 def build_batch_sampler(cfg_batch_sample):

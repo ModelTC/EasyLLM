@@ -867,6 +867,10 @@ class ParallelTransformerLayerPipe(ParallelTransformerLayer):
             # Attention mask is an activation.
             hidden_states, attention_mask = inputs[0], inputs[1]
             return super().forward(*inputs, **kwargs), attention_mask
+        elif len(inputs) == 3:
+            hidden_states, cu_seqlens, position_ids = inputs[0], inputs[1], inputs[2]
+            attention_mask = None
+            return super().forward(hidden_states, attention_mask, cu_seqlens, position_ids, **kwargs), cu_seqlens, position_ids
         elif len(inputs) == 4:
             hidden_states, attention_mask, cu_seqlens, position_ids = inputs[0], inputs[1], inputs[2], inputs[3]
             return super().forward(*inputs, **kwargs), attention_mask, cu_seqlens, position_ids

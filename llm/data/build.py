@@ -40,7 +40,7 @@ def build_data_iterator(tokenizer, cfg_data, consumed_train_samples, data_type):
     if dataloader is not None:
         if batch_sample_type == 'megatron_pretrain' or batch_sample_type == 'base':
             iterator = iter(dataloader)
-        if batch_sample_type == 'megatron_pretrain_random':
+        if batch_sample_type == 'megatron_pretrain_random' or batch_sample_type == "megatron_length_group":
             iterator = iter(cyclic_iter(dataloader))
     else:
         iterator = None

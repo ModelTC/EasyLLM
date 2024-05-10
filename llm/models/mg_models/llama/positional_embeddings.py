@@ -11,7 +11,8 @@ class RotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, base=10000, precision=torch.half, scale_factor=1.0):
         super().__init__()
         inv_freq = 1. / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer('inv_freq', inv_freq)
+        # self.register_buffer('inv_freq', inv_freq)
+        self.inv_freq = inv_freq
         self.max_seq_len_cached = None
         self.cos_cached = None
         self.sin_cached = None
@@ -19,6 +20,7 @@ class RotaryEmbedding(torch.nn.Module):
         self.scale_factor = scale_factor
 
     def forward(self, x, seq_dim=1, seq_len=None):
+        self.inv_freq = self.inv_freq.cuda()
         if seq_len is None:
             seq_len = x.shape[seq_dim]
         if self.max_seq_len_cached is None or (seq_len > self.max_seq_len_cached):

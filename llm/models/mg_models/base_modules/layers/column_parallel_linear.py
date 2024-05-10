@@ -189,7 +189,8 @@ class ColumnParallelLinear(torch.nn.Module):
                  skip_bias_add=False,
                  use_cpu_initialization=False,
                  params_dtype=torch.half,
-                 sequence_parallel=False):
+                 sequence_parallel=False,
+                 num_attention_heads=None):
         super(ColumnParallelLinear, self).__init__()
 
         # Keep input parameters
@@ -206,24 +207,36 @@ class ColumnParallelLinear(torch.nn.Module):
         world_size = dist_env.get_tensor_model_parallel_world_size()
         assert output_size % world_size == 0, '{} is not divisible by {}'.format(
             output_size, world_size)
-        self.output_size_per_partition = output_size // world_size
+        if num_attention_heads is None:
+            self.output_size_per_partition = [output_size // world_size] * world_size
+        else:
+            part_size = output_size // num_attention_heads
+            self.output_size_per_partition = [num_attention_heads // world_size] * world_size
+            if num_attention_heads % world_size > 0:
+                v_mode = num_attention_heads % world_size
+                for idx in range(v_mode):
+                    self.output_size_per_partition[world_size - 1 - idx] += 1
+            for idx in range(len(self.output_size_per_partition)):
+                self.output_size_per_partition[idx] *= part_size
+        self.num_attention_heads = num_attention_heads
         self.skip_bias_add = skip_bias_add
+        self.rank = dist_env.get_tensor_model_parallel_rank()
 
         # Parameters.
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
         # Initialize weight.
         if use_cpu_initialization:
-            self.weight = Parameter(torch.empty(self.output_size_per_partition,
+            self.weight = Parameter(torch.empty(self.output_size_per_partition[self.rank],
                                                 self.input_size,
                                                 dtype=params_dtype))
             self.master_weight = _initialize_affine_weight_cpu(
                 self.weight, self.output_size, self.input_size,
-                self.output_size_per_partition, 0, init_method,
+                self.output_size_per_partition[self.rank], 0, init_method,
                 stride=stride, return_master_weight=keep_master_weight_for_test)
         else:
             self.weight = Parameter(torch.empty(
-                self.output_size_per_partition, self.input_size,
+                self.output_size_per_partition[self.rank], self.input_size,
                 device=torch.cuda.current_device(), dtype=params_dtype))
             _initialize_affine_weight_gpu(self.weight, init_method,
                                           partition_dim=0, stride=stride)
@@ -231,10 +244,10 @@ class ColumnParallelLinear(torch.nn.Module):
         if bias:
             if use_cpu_initialization:
                 self.bias = Parameter(torch.empty(
-                    self.output_size_per_partition, dtype=params_dtype))
+                    self.output_size_per_partition[self.rank], dtype=params_dtype))
             else:
                 self.bias = Parameter(torch.empty(
-                    self.output_size_per_partition,
+                    self.output_size_per_partition[self.rank],
                     device=torch.cuda.current_device(),
                     dtype=params_dtype))
             set_tensor_model_parallel_attributes(self.bias, True, 0, stride)
