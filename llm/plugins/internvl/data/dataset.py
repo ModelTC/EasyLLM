@@ -11,7 +11,6 @@ from llm.utils.general.registry_factory import DATASET_REGISTRY
 from llm.utils.general.log_helper import default_logger as logger
 from llm.utils.tools.petrel_helper import PetrelHelper
 from llm.data.nlp_dataset import build_dataset
-from llm.data.nlp_dataloader import internvl_build_datasets
 from llm.data.nlp_transforms import build_transformer
 
 
@@ -158,10 +157,7 @@ class InternPackedDataset(Dataset):
         self.force_image_size = force_image_size
         self.patch_size = patch_size
         self.down_sample_ratio = down_sample_ratio
-        if dataset["type"] == "internvl":
-            self.dataset = internvl_build_datasets(dataset, copy.deepcopy(tokenizer))
-        else:
-            self.dataset = build_dataset(dataset, copy.deepcopy(tokenizer))
+        self.dataset = build_dataset(dataset, copy.deepcopy(tokenizer))
         self.dataset_cfg = dataset
         self.tokenizer = tokenizer
         self.vit_packed_length = vit_packed_length

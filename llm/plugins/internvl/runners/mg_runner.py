@@ -5,7 +5,7 @@ from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from llm.utils.general.parser_helper import parse_args
 from llm.utils.general.yaml_loader import load_yaml
 from llm.runners.base_llm_runner import BaseRunner
-from llm.plugins.internvl.utils.optimizer_helper import build_optimizer
+from llm.utils.model.optimizer_helper import build_optimizer
 from llm.plugins.internvl.models.mg_models.internvl import _HUSKY_MODELS
 from llm.utils.env import (get_distributed_info, initialize_distributed,
                            setup_deepspeed_random_and_activation_checkpointing,
@@ -16,7 +16,7 @@ from llm.plugins.internvl.models.mg_models import get_layer_info
 from llm.models.mg_models import unwrap_model, Float16Module
 from llm.utils.model.lr_helper import build_learning_rate_scheduler
 
-from llm.plugins.internvl.datas.data_utils import (
+from llm.plugins.internvl.data.data_utils import (
     IMG_CONTEXT_TOKEN,
     IMG_START_TOKEN,
     IMG_END_TOKEN,
