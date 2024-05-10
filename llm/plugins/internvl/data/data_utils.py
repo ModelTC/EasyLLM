@@ -1,0 +1,17 @@
+QUAD_START_TOKEN = '<quad>'
+QUAD_END_TOKEN = '</quad>'
+
+IGNORE_INDEX = -100
+IGNORE_TOKEN_ID = IGNORE_INDEX
+IMG_CONTEXT_TOKEN = "<IMG_CONTEXT>"
+UNK_TOKEN = "<unk>"
+IMG_START_TOKEN = "<img>"
+IMG_END_TOKEN = "</img>"
+VIDEO_START_TOKEN = "<vid>"
+VIDEO_END_TOKEN = "</vid>"
+BOX_START_TOKEN = "<box>"
+BOX_END_TOKEN = "</box>"
+REF_START_TOKEN = "<ref>"
+REF_END_TOKEN = "</ref>"
+REL_START_TOKEN = "<pred>"
+REL_END_TOKEN = "</pred>"
