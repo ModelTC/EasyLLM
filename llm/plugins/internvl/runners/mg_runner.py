@@ -161,6 +161,8 @@ def main():
     cfg = load_yaml(args.config)
     if args.profile_path is not None:
         cfg['model']['kwargs']['profile_path'] = args.profile_path
+    if args.layer_profile:
+        cfg['model']['kwargs']['layer_profile'] = args.layer_profile
     if args.pp_method is not None:
         cfg['model']['kwargs']['pp_partition_method'] = args.pp_method
 

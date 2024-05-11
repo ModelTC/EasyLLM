@@ -68,7 +68,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         vision_extract_feat_params=None,
         drop_path_rate=0.0,
         profile_path=None,
-        verbose_profile=False
+        layer_profile=False
     ):
 
         self.parallel_output = parallel_output
@@ -109,7 +109,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
             partition_method = 'type:transformer'
 
         self.profile_path = profile_path
-        self.verbose_profile  = verbose_profile
+        self.layer_profile  = layer_profile
 
         super().__init__(layers=self.specs,
                          loss_fn=self.loss_fn,
@@ -290,7 +290,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 nvmlInit()
                 handle = nvmlDeviceGetHandleByIndex(global_rank % 8)
                 st_time = get_time()
-            if self.verbose_profile:
+            if self.layer_profile:
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
                 tp_rank = dist_env.get_tensor_model_parallel_rank()
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):

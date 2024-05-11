@@ -58,6 +58,8 @@ def _add_training_args(parser):
                        help='Slurm port to init.')
     group.add_argument('--profile_path', type=str, default=None,
                        help='profile_path')
+    group.add_argument('--layer_profile', type=bool, default=False,
+                       help='layer profile')
     group.add_argument('--pp_method', type=str, default=None,
                        help='pp mehod')
 
