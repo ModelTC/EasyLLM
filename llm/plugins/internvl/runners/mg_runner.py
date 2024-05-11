@@ -159,6 +159,11 @@ def main():
     args = parse_args()
     assert args.config is not None, 'please provide a config file'
     cfg = load_yaml(args.config)
+    if args.profile_path is not None:
+        cfg['model']['kwargs']['profile_path'] = args.profile_path
+    if args.pp_method is not None:
+        cfg['model']['kwargs']['pp_partition_method'] = args.pp_method
+
     print(f'training cfg: {cfg}')
     runtime_none_keys = ['seed', 'local_rank', 'tensor_model_parallel_size',
                          'pipeline_model_parallel_size', 'distributed_backend']

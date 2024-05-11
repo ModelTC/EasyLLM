@@ -241,6 +241,8 @@ class BaseRunner(object):
         # args = self.args
         cfg_saver = self.config['saver']
         save_interval = cfg_saver.get('save_interval', 0)
+        if not cfg_saver.get('enabled', True):
+            return 
         if (save_interval and (cur_iter + 1) % save_interval == 0) or (cur_iter + 1 == self.total_train_iters):
             save_checkpoint((cur_iter + 1), self.consumed_train_samples, self.consumed_train_tokens,
                             self.model, cfg_saver, self.lora_mode, self.cfg_lora)
@@ -272,7 +274,7 @@ class BaseRunner(object):
         self.model.set_batch_fn(self.batch_pipe_func[data_type])
         if hasattr(self.model, 'set_train_status'):
             self.model.set_train_status(self.model, self.lora_mode)
-        else:
+        else:   
             self.model.train()
 
         for iteration in range(self.start_iteration, self.total_train_iters):
@@ -292,6 +294,9 @@ class BaseRunner(object):
             self._hooks('after_train_iter', iteration, output)
             self.save_checkpoint(iteration)
         self._hooks('after_train')
+        if hasattr(self.model.module, "verbose_profile") or hasattr(self.model.module, "profile_path"):
+            self.model.module.save_profile()
+
 
     def generate(self):
         args = self.args

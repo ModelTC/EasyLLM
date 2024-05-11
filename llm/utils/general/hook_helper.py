@@ -88,7 +88,11 @@ class TrainValLoggerHook(Hook):
         self.model_args['vocab_size'] = runner.model.word_embedings_params['vocab_size']
         self.model_args['checkpoint_activations'] = runner.model.model_kwargs['checkpoint_activations']
         self.model_args['glu_activation'] = runner.model.transformer_layer_params['glu_activation']
-        self.timers('train-iter-time').start()
+
+    def before_train_iter(self, cur_iter, output={}):
+        runner = self.runner_ref()
+        if cur_iter == runner.start_iteration:
+            self.timers('train-iter-time').start()
 
     def after_train_iter(self, cur_iter, output={}):
         """ Make sense after forwarding
@@ -191,6 +195,12 @@ class TrainValLoggerHook(Hook):
             if (cur_iter % self.report_memory_interval == 0) and learning_rate > 0.:
                 # Report memory after optimizer state has been initialized.
                 report_memory('(after {} iterations)'.format(cur_iter + 1))
+
+            if runner.profile_path is not None:
+                import os
+                if dist_env.get_global_rank() == 0:
+                    with open(os.path.join(runner.profile_path, "iter_time.txt"), "a") as f:
+                        print(elapsed_time_per_iteration, file=f)
 
 
 @HOOK_REGISTRY.register('early_exit')

@@ -56,6 +56,11 @@ def _add_training_args(parser):
     group.add_argument('--opts', type=str, default=None, nargs=argparse.REMAINDER)
     group.add_argument('--port', type=int, default=13333,
                        help='Slurm port to init.')
+    group.add_argument('--profile_path', type=str, default=None,
+                       help='profile_path')
+    group.add_argument('--pp_method', type=str, default=None,
+                       help='pp mehod')
+
     return parser
 
 

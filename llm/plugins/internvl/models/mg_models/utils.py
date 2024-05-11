@@ -896,3 +896,34 @@ class DropPath(nn.Module):
 
     def extra_repr(self):
         return f'drop_prob={round(self.drop_prob,3):0.3f}'
+
+def dist_save_obj_to_json(data, name, save_dir='./'):
+    pp = dist_env.get_pipeline_model_parallel_rank()
+    tp = dist_env.get_tensor_model_parallel_rank()
+    filepath = save_dir + name + f'_pp{pp}_tp{tp}.json'
+    import json
+    with open(filepath, 'a') as f:
+        print(json.dumps(data), file=f, flush=True)
+
+def reduce_list_data(list_data):
+    tensor = torch.tensor(list_data, dtype=torch.int).cuda()
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    tensor = tensor // torch.distributed.get_world_size()
+    list_data = tensor.tolist()
+    return list_data
+
+from contextlib import contextmanager
+
+@contextmanager
+def measure_time(label='', _print=True):
+    stats = {}
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    yield stats
+    end.record()
+    torch.cuda.synchronize()
+    elapsed_time = start.elapsed_time(end)  # 转换为秒
+    if _print:
+        print(f'{label} time: {elapsed_time:.8f}s')
+    stats['elapsed_time'] = f'{elapsed_time:.8f}'

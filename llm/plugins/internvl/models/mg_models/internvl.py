@@ -18,6 +18,7 @@ from llm.models.mg_models.base_modules.modules.fp16_module import float16_to_fp3
 from .default_cfg import update_model_cfg
 from .utils import load_lora_ckpt_pretrained, load_ckpt_pretrained, save_lora_ckpt_pretrained
 from .utils import set_train_params, set_train_status
+from .utils import measure_time, dist_save_obj_to_json
 from llm.utils.general.registry_factory import LOSS_REGISTRY
 
 from .vision_embeddings import VisionEmbeddings
@@ -25,7 +26,16 @@ from .vision_transformer import ParallelVisionTransformerLayerPipe
 from .vision_extract_feat import VisionExtractFeat
 from llm.utils.general.log_helper import default_logger as logger
 import torch.nn as nn
+import os
+try:
+    from pynvml import *
+except:
+    pass
 
+def get_time():
+    import time
+    torch.cuda.synchronize()
+    return time.time()
 
 class InternModelPipe(PipelineModule, MegatronModule):
     """
@@ -56,7 +66,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
         vision_embedings_params=None,
         vision_transformer_layer_params=None,
         vision_extract_feat_params=None,
-        drop_path_rate=0.0
+        drop_path_rate=0.0,
+        profile_path=None,
+        verbose_profile=False
     ):
 
         self.parallel_output = parallel_output
@@ -96,6 +108,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
         else:
             partition_method = 'type:transformer'
 
+        self.profile_path = profile_path
+        self.verbose_profile  = verbose_profile
+
         super().__init__(layers=self.specs,
                          loss_fn=self.loss_fn,
                          topology=topo,
@@ -122,6 +137,14 @@ class InternModelPipe(PipelineModule, MegatronModule):
                             flag = True
                     if flag:
                         self.checkpoint_list.append(j)
+        if self.profile_path is not None:
+            if dist_env.get_global_rank() == 0:
+                os.system(f"mkdir -p {self.profile_path}")
+                import json
+                with open(os.path.join(self.profile_path, "pp_parts.txt"), "w") as f:
+                    print(json.dumps(self.parts), file=f, flush=True)
+        self.layer_profile = []
+        self.pp_profile = []
 
     def _is_checkpointable(self, funcs):
         # return False
@@ -155,6 +178,19 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     range_size = range_size[pp_rank]
                 return range_size
         return -1
+    
+    def get_layer_idx(self, start_idx):
+        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        return start_idx + self.parts[pp_rank]
+    
+    def save_profile(self):
+        for item in self.layer_profile:
+            dist_save_obj_to_json(item, 'layer_time', self.profile_path)
+        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        for info in self.pp_profile:
+            import json
+            with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
+                print(json.dumps(info), file=f, flush=True)
 
     def get_seq_len(self, forward_input):
         # first stage
@@ -249,28 +285,72 @@ class InternModelPipe(PipelineModule, MegatronModule):
         else:
             num_layers = len(self.forward_funcs)
             x = forward_input
-            for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
-                end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
+            if self.profile_path:
+                global_rank = dist_env.get_global_rank()
+                nvmlInit()
+                handle = nvmlDeviceGetHandleByIndex(global_rank % 8)
+                st_time = get_time()
+            if self.verbose_profile:
+                pp_rank = dist_env.get_pipeline_model_parallel_rank()
+                tp_rank = dist_env.get_tensor_model_parallel_rank()
+                for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
+                    end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
+                    layer_idx = self.get_layer_idx(start_idx)
+                    with measure_time(f'pp{pp_rank}_layer{layer_idx}', False) as stats:
+                        funcs = self.forward_funcs[start_idx:end_idx]
+                        if funcs[0].__class__.__name__ in self.ckpt_module_set:
+                            seq_len = self.get_seq_len(x)
+                            if self.size_map is not None:
+                                self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
+                        else:
+                            self.skip_checkpoint_layer_range = 0
+                        # Since we either pass tensors or tuples of tensors without unpacking, we
+                        # need to be careful not to double-wrap tensors with tuple.
+                        if not isinstance(x, tuple):
+                            x = (x, )
+                        # if hasattr(funcs[0], "vision_layer_number") and funcs[0].vision_layer_number == 2:
+                        #     import pdb;pdb.set_trace()
+                        if self._is_checkpointable(funcs):
+                            # print(funcs[0].vision_layer_number)
+                            x = self.activation_checkpoint_func(exec_range_func(start_idx, end_idx), *x)
+                        else:
+                            x = exec_range_func(start_idx, end_idx)(*x)
+                    # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path) 
+                    self.layer_profile.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
+            else:
+                for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
+                    end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
 
-                funcs = self.forward_funcs[start_idx:end_idx]
-                if funcs[0].__class__.__name__ in self.ckpt_module_set:
-                    seq_len = self.get_seq_len(x)
-                    if self.size_map is not None:
-                        self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
-                else:
-                    self.skip_checkpoint_layer_range = 0
-                # Since we either pass tensors or tuples of tensors without unpacking, we
-                # need to be careful not to double-wrap tensors with tuple.
-                if not isinstance(x, tuple):
-                    x = (x, )
+                    funcs = self.forward_funcs[start_idx:end_idx]
+                    if funcs[0].__class__.__name__ in self.ckpt_module_set:
+                        seq_len = self.get_seq_len(x)
+                        if self.size_map is not None:
+                            self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
+                    else:
+                        self.skip_checkpoint_layer_range = 0
+                    # Since we either pass tensors or tuples of tensors without unpacking, we
+                    # need to be careful not to double-wrap tensors with tuple.
+                    if not isinstance(x, tuple):
+                        x = (x, )
 
-                # if hasattr(funcs[0], "vision_layer_number") and funcs[0].vision_layer_number == 2:
-                #     import pdb;pdb.set_trace()
-                if self._is_checkpointable(funcs):
-                    # print(funcs[0].vision_layer_number)
-                    x = self.activation_checkpoint_func(exec_range_func(start_idx, end_idx), *x)
-                else:
-                    x = exec_range_func(start_idx, end_idx)(*x)
+                    # if hasattr(funcs[0], "vision_layer_number") and funcs[0].vision_layer_number == 2:
+                    #     import pdb;pdb.set_trace()
+                    if self._is_checkpointable(funcs):
+                        # print(funcs[0].vision_layer_number)
+                        x = self.activation_checkpoint_func(exec_range_func(start_idx, end_idx), *x)
+                    else:
+                        x = exec_range_func(start_idx, end_idx)(*x)
+            if self.profile_path:
+                end_time = get_time()
+                cur_time = end_time - st_time
+                memory_info = nvmlDeviceGetMemoryInfo(handle)
+                info = {}
+                pp_rank = dist_env.get_pipeline_model_parallel_rank()
+                info['time'] = cur_time
+                info['stage'] = pp_rank
+                info['used_memory'] = memory_info.used // (1024**2)
+                info['free_memory'] = memory_info.free // (1024**2)
+                self.pp_profile.append(info)
         return x
 
     # def forward(self, forward_input):
@@ -298,6 +378,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
         elif method == 'parameters':
             param_counts = self._count_layer_params()
             self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
+            if self.profile_path is not None:
+                from .utils import reduce_list_data
+                self.parts = reduce_list_data(self.parts)
+                dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in self.parts]
@@ -336,7 +420,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 except AttributeError:
                     print(f'  loss: {self.loss_fn.__class__.__name__}')
         self._set_bounds(start=self.parts[stage_id], stop=self.parts[stage_id + 1])
-        # import ipdb; ipdb.set_trace()
+        logger.info(self.parts)
 
     def build_specs(self, num_intern_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
         specs = []
