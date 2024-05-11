@@ -143,7 +143,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 import json
                 with open(os.path.join(self.profile_path, "pp_parts.txt"), "w") as f:
                     print(json.dumps(self.parts), file=f, flush=True)
-        self.layer_profile = []
+        self.layer_profile_info = []
         self.pp_profile = []
 
     def _is_checkpointable(self, funcs):
@@ -184,7 +184,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         return start_idx + self.parts[pp_rank]
     
     def save_profile(self):
-        for item in self.layer_profile:
+        for item in self.layer_profile_info:
             dist_save_obj_to_json(item, 'layer_time', self.profile_path)
         pp_rank  = dist_env.get_pipeline_model_parallel_rank()
         for info in self.pp_profile:
@@ -316,7 +316,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                         else:
                             x = exec_range_func(start_idx, end_idx)(*x)
                     # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path) 
-                    self.layer_profile.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
+                    self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)

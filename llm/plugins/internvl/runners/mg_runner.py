@@ -34,6 +34,7 @@ _TRAIN_START_TIME = time.time()
 class HuskyBaseRunner(BaseRunner):
     def build(self):
         super().build()
+        self.profile_path = self.config['model']['kwargs'].get("profile_path", None)
         if self.training and self.config['trainer']['lr_scheduler']["kwargs"].get("training_steps", None) is None:
             if not isinstance(self.lr_scheduler.lr_lambdas, list):
                 self.lr_scheduler.lr_lambdas.keywords['training_steps'] = self.total_train_iters
