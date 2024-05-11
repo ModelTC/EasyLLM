@@ -181,14 +181,20 @@ class InternPackedDataset(Dataset):
 
     def preprocess_single(self):
         dict_num_tokens = {}
-        meta_info = json.loads(open(self.dataset.json_file).read())
-        for idx, data_name in enumerate(meta_info.keys()):
-            with open(meta_info[data_name]["token_lengths"], "r") as f:
-                token_lengths = json.load(f)
-            dict_num_tokens[idx] = {
-                "lengths": len(self.dataset),
-                "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
-            }
+        json_file_list = self.dataset.json_file
+        if not isinstance(json_file_list, list):
+            json_file_list = [json_file_list]
+        idx = 0
+        for json_file in json_file_list:
+            meta_info = json.loads(open(json_file).read())
+            for data_name in meta_info.keys():
+                with open(meta_info[data_name]["token_lengths"], "r") as f:
+                    token_lengths = json.load(f)
+                dict_num_tokens[idx] = {
+                    "lengths": len(self.dataset),
+                    "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
+                }
+                idx += 1
         self.dict_num_tokens = dict_num_tokens
 
     def preprocess(self):
