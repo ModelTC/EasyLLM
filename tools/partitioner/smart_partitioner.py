@@ -60,10 +60,8 @@ class Partitioner(object):
             comm_sorted_grids = grids[sorted_idx][:]
         else:
             comm_sorted_grids = grids[sorted_idx][:comm_topk]
-        grids_fwd_times = self.get_grids_times(comm_sorted_grids)
-        sorted_idx, _ = self.sort_by_var(grids_fwd_times)
 
-        return comm_sorted_grids[sorted_idx][:var_topk]
+        return comm_sorted_grids[:var_topk]
 
     """
         根据一个划分好的parts, 以radius来划分grid
@@ -242,6 +240,7 @@ if __name__ == '__main__':
     # 读取存下来的forward time
     stats = load_stats(args.input_path, NUM_LAYER, NUM_PP, NUM_TP)
     avg_forward_time = get_avg_stats(stats, warmup_iter, verbose=False)
+    print(avg_forward_time)
 
     # 初始化smart partioner
     partitioner = Partitioner(num_layer=NUM_LAYER, num_pp=NUM_PP, num_tp=NUM_TP,

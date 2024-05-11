@@ -5,7 +5,7 @@ def get_comm_times(vit_bs=1,
                    llm_length=4096,
                    llm_hidden_size=8192,
                    num_layer=149,
-                   start_idx=1,
+                   start_idx=0,
                    vit_layer_num=45,
                    llm_layer_num=48,
                    vit_num_token=256
@@ -18,7 +18,7 @@ def get_comm_times(vit_bs=1,
             num_activations[i] = vit_bs * vit_length * vit_hidden_size
         # mlp projection
         if i == vit_layer_num + 2:
-            num_activations[i] == vit_bs * vit_num_token * llm_hidden_size
+            num_activations[i] = vit_bs * vit_num_token * llm_hidden_size
         # llm activations
         if i >= vit_layer_num + 3:
             num_activations[i] = llm_bs * llm_length * llm_hidden_size
