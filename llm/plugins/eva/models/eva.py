@@ -6,19 +6,19 @@ from deepspeed.runtime import utils as ds_utils
 
 from llm.utils.env import dist_env
 from llm.models.mg_models.base_modules.modules.meg_module import MegatronModule
-from .word_embedings import EmbeddingPipe
+from llm.plugins.internvl.models.mg_models.word_embedings import EmbeddingPipe
 # from llm.models.mg_models.llama.lm_head import EmbedddingPipeNoTied
-from .lm_head import EmbedddingPipeNoTied
+from llm.plugins.internvl.models.mg_models.lm_head import EmbedddingPipeNoTied
 # from llm.models.mg_models.llama.transformer import ParallelTransformerLayerPipe
-from .transformer import ParallelTransformerLayerPipe
+from llm.plugins.internvl.models.mg_models.transformer import ParallelTransformerLayerPipe
 from llm.models.mg_models.base_modules.layers.fused_layer_norm import build_layer_norm
 
 from llm.models.mg_models.base_modules.modules.fp16_module import float16_to_fp32, fp32_to_float16
 # from .losses import get_cross_entropy
 from .default_cfg import update_model_cfg
-from .utils import load_lora_ckpt_pretrained, load_ckpt_pretrained, save_lora_ckpt_pretrained
-from .utils import set_train_params, set_train_status
-from .utils import measure_time, dist_save_obj_to_json
+from llm.plugins.eva.models.utils import load_lora_ckpt_pretrained, load_ckpt_pretrained, save_lora_ckpt_pretrained
+from llm.plugins.eva.models.utils import set_train_params, set_train_status
+from llm.plugins.eva.models.utils import measure_time, dist_save_obj_to_json
 from llm.utils.general.registry_factory import LOSS_REGISTRY
 
 from .vision_embeddings import VisionEmbeddings
@@ -37,7 +37,7 @@ def get_time():
     torch.cuda.synchronize()
     return time.time()
 
-class InternModelPipe(PipelineModule, MegatronModule):
+class EVAModelPipe(PipelineModule, MegatronModule):
     """
         LLaMA model.
         NOTE: The name of this class has to be kept as GPTModelPipe.
@@ -46,7 +46,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
     def __init__(
         self,
-        num_intern_layers,
+        num_eva_layers,
         num_layers,
         parallel_output=True,
         fp16: bool = False,
@@ -66,7 +66,6 @@ class InternModelPipe(PipelineModule, MegatronModule):
         vision_embedings_params=None,
         vision_transformer_layer_params=None,
         vision_extract_feat_params=None,
-        drop_path_rate=0.0,
         profile_path=None,
         layer_profile=False
     ):
@@ -74,7 +73,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.parallel_output = parallel_output
         self.sequence_parallel = sequence_parallel
         # set model args
-        self._set_model_kwargs(num_intern_layers, num_layers, checkpoint_activations)
+        self._set_model_kwargs(num_eva_layers, num_layers, checkpoint_activations)
         self.word_embedings_params = word_embedings_params
         self.transformer_layer_params = transformer_layer_params
         self.layer_norm_params = layer_norm_params
@@ -83,10 +82,11 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.vision_embedings_params = vision_embedings_params
         self.vision_transformer_layer_params = vision_transformer_layer_params
         self.vision_extract_feat_params = vision_extract_feat_params
-        self.drop_path_rate = drop_path_rate
 
-        self.specs = self.build_specs(num_intern_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
+        self.specs = self.build_specs(num_eva_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
         self.loss_fn = LOSS_REGISTRY.build(self.loss_params)
+        self.img_size = self.vision_embedings_params['image_size']
+        self.patch_size = self.vision_embedings_params['patch_size']
 
         if checkpoint_activations:
             interval = checkpoint_num_layers
@@ -178,7 +178,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     range_size = range_size[pp_rank]
                 return range_size
         return -1
-
+    
     def get_layer_idx(self, start_idx):
         pp_rank  = dist_env.get_pipeline_model_parallel_rank()
         return start_idx + self.parts[pp_rank]
@@ -207,14 +207,14 @@ class InternModelPipe(PipelineModule, MegatronModule):
             elif len(forward_input[0].shape) == 3:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1]
             else:
-                seq_len = 1025 * forward_input[-2].shape[0]
+                seq_len = self.img_size // self.patch_size * forward_input[-2].shape[0]
         elif len(forward_input) == 6:
             if len(forward_input[0].shape) == 4:
                 seq_len = forward_input[0].shape[1] * forward_input[0].shape[2]
             elif len(forward_input[0].shape) == 3:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1]
             else:
-                seq_len = 1025 * forward_input[-1].shape[0]
+                seq_len = self.img_size // self.patch_size * forward_input[-1].shape[0]
         elif len(forward_input) in (3, 4, 5):
             if self.sequence_parallel:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1] * dist_env.get_tensor_model_parallel_world_size()
@@ -359,8 +359,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
     #         self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
     #     return super().forward(forward_input)
 
-    def _set_model_kwargs(self, num_intern_layers, num_layers, checkpoint_activations):
-        self.model_kwargs = {"num_intern_layers": num_intern_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
+    def _set_model_kwargs(self, num_eva_layers, num_layers, checkpoint_activations):
+        self.model_kwargs = {"num_eva_layers": num_eva_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
 
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
@@ -422,7 +422,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self._set_bounds(start=self.parts[stage_id], stop=self.parts[stage_id + 1])
         logger.info(self.parts)
 
-    def build_specs(self, num_intern_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
+    def build_specs(self, num_eva_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
         specs = []
 
         def _to_float16(inputs):
@@ -437,11 +437,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         specs.append(LayerSpec(VisionEmbeddings, **self.vision_embedings_params))
 
-        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_intern_layers)]
         # dpr = [0.0 for _ in range(num_intern_layers)]
-        for vision_layer_idx in range(num_intern_layers):
+        for vision_layer_idx in range(num_eva_layers):
             self.vision_transformer_layer_params.update({'vision_layer_number': vision_layer_idx + 2})
-            self.vision_transformer_layer_params['drop_path_rate'] = dpr[vision_layer_idx]
             specs.append(LayerSpec(ParallelVisionTransformerLayerPipe, **self.vision_transformer_layer_params))
 
         specs.append(LayerSpec(VisionExtractFeat, **self.vision_extract_feat_params))
@@ -449,7 +447,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.word_embedings_params.update({"fp32_residual_connection": fp32_residual_connection})
         specs.append(LayerSpec(EmbeddingPipe, **self.word_embedings_params))
 
-        for layer_idx in range((num_intern_layers + 4), (num_intern_layers + 4 + num_layers)):
+        for layer_idx in range((num_eva_layers + 4), (num_eva_layers + 4 + num_layers)):
             self.transformer_layer_params.update({'qkv_pack': True})
             self.transformer_layer_params.update({'layer_number': layer_idx})
             specs.append(LayerSpec(ParallelTransformerLayerPipe, **self.transformer_layer_params))
@@ -493,8 +491,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
         return specs
 
 
-_HUSKY_MODELS = {
-    "intern_mini": {
+_EVA_MODELS = {
+    "eva_mini": {
         "num_layers": 48,  # 48
         "hidden_size": 768,  # 6144,
         "num_attention_heads": 48,  # 48,
@@ -502,21 +500,18 @@ _HUSKY_MODELS = {
         "intermediate_size": 2048,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
+        "num_eva_layers": 45,  # 45,
         "vision_hidden_size": 400,  # 3200,
+        "vision_image_size": 448,
         "vision_patch_size": 14,
         "vision_intermediate_size": 1600,  # 12800,
         "vision_num_attention_heads": 25,  # 25,
         "vision_attention_dropout": 0.0,
-        "vision_layer_norm_eps": 1e-05,
+        "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
-        "drop_path_rate": 0.4,
-        "initializer_factor": 0.1,
-        "qk_normalization": True,
-        "proj_dropout": 0.0,
-        "image_fold": False
+        "postnorm": False
     },
-    "intern_6b_20b": {
+    "eva_1b_20b": {
         "num_layers": 48,  # 48
         "hidden_size": 6144,  # 6144,
         "num_attention_heads": 48,  # 48,
@@ -524,48 +519,84 @@ _HUSKY_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
-        "vision_hidden_size": 3200,  # 3200,
+        "num_eva_layers": 40,  # 45,
+        "vision_hidden_size": 1408,  # 3200,
+        "vision_image_size": 224, # 224,
         "vision_patch_size": 14,
-        "vision_intermediate_size": 12800,  # 12800,
-        "vision_num_attention_heads": 25,  # 25,
+        "vision_intermediate_size": 6144,  # 12800,
+        "vision_num_attention_heads": 16,  # 25,
         "vision_attention_dropout": 0.0,
-        "vision_layer_norm_eps": 1e-05,
+        "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
-        "drop_path_rate": 0.4,
-        "initializer_factor": 0.1,
-        "qk_normalization": True,
-        "proj_dropout": 0.0,
-        "image_fold": False
+        "postnorm": False,
+        "qv_bias": True
     },
-    "intern_6b_102b": {
-        "num_layers": 96,  # 48
-        "hidden_size": 8192,  # 6144,
-        "num_attention_heads": 64,  # 48,
+    "eva_4b_20b": {
+        "num_layers": 48,  # 48
+        "hidden_size": 6144,  # 6144,
+        "num_attention_heads": 48,  # 48,
         "num_kv_attention_heads": 8,
-        "intermediate_size": 36864,
+        "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
-        "vision_hidden_size": 3200,  # 3200,
+        "num_eva_layers": 64,  # 45,
+        "vision_hidden_size": 1792,  # 3200,
+        "vision_image_size": 224, # 224,
         "vision_patch_size": 14,
-        "vision_intermediate_size": 12800,  # 12800,
-        "vision_num_attention_heads": 25,  # 25,
+        "vision_intermediate_size": 15360,  # 12800,
+        "vision_num_attention_heads": 16,  # 25,
         "vision_attention_dropout": 0.0,
-        "vision_layer_norm_eps": 1e-05,
+        "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
-        "drop_path_rate": 0.4,
-        "initializer_factor": 0.1,
-        "qk_normalization": True,
-        "proj_dropout": 0.0,
-        "image_fold": False
-    }
+        "postnorm": True,
+        "qv_bias": True
+    },
+    "eva_8b_20b": {
+        "num_layers": 48,  # 48
+        "hidden_size": 6144,  # 6144,
+        "num_attention_heads": 48,  # 48,
+        "num_kv_attention_heads": 8,
+        "intermediate_size": 16384,  # 16384,
+        "eps": 1e-5,
+        # vision
+        "num_eva_layers": 32,  # 45,
+        "vision_hidden_size": 4096,  # 3200,
+        "vision_image_size": 448, # 224,
+        "vision_patch_size": 14,
+        "vision_intermediate_size": 20480,  # 12800,
+        "vision_num_attention_heads": 32,  # 25,
+        "vision_attention_dropout": 0.0,
+        "vision_layer_norm_eps": 1e-06,
+        "vit_select_layer": -1,
+        "postnorm": False,
+        "qv_bias": False
+    },
+    "eva_18b_20b": {
+        "num_layers": 48,  # 48
+        "hidden_size": 6144,  # 6144,
+        "num_attention_heads": 48,  # 48,
+        "num_kv_attention_heads": 8,
+        "intermediate_size": 16384,  # 16384,
+        "eps": 1e-5,
+        # vision
+        "num_eva_layers": 48,  # 45,
+        "vision_hidden_size": 5120,  # 3200,
+        "vision_image_size": 224, # 224,
+        "vision_patch_size": 14,
+        "vision_intermediate_size": 25600,  # 12800,
+        "vision_num_attention_heads": 40,  # 25,
+        "vision_attention_dropout": 0.0,
+        "vision_layer_norm_eps": 1e-06,
+        "vit_select_layer": -1,
+        "postnorm": True,
+        "qv_bias": False
+    },
 }
 
 
-def intern_custom(**cfg_model):
+def eva_custom(**cfg_model):
     cfg_model = update_model_cfg(cfg_model)
-    model = InternModelPipe(**cfg_model)
+    model = EVAModelPipe(**cfg_model)
     # set save and load
     model.load_lora_ckpt_pretrained = load_lora_ckpt_pretrained
     model.load_ckpt_pretrained = load_ckpt_pretrained
@@ -576,19 +607,31 @@ def intern_custom(**cfg_model):
     return model
 
 
-def intern_mini(**cfg_model):
-    cfg_mini = _HUSKY_MODELS['intern_mini']
+def eva_mini(**cfg_model):
+    cfg_mini = _EVA_MODELS['eva_mini']
     cfg_model.update(cfg_mini)
-    return intern_custom(**cfg_model)
+    return eva_custom(**cfg_model)
 
 
-def intern_6b_20b(**cfg_model):
-    cfg_6b_20b = _HUSKY_MODELS['intern_6b_20b']
-    cfg_model.update(cfg_6b_20b)
-    return intern_custom(**cfg_model)
+def eva_1b_20b(**cfg_model):
+    cfg_1b_20b = _EVA_MODELS['eva_1b_20b']
+    cfg_model.update(cfg_1b_20b)
+    return eva_custom(**cfg_model)
 
 
-def intern_6b_102b(**cfg_model):
-    cfg_6b_102b = _HUSKY_MODELS['intern_6b_102b']
-    cfg_model.update(cfg_6b_102b)
-    return intern_custom(**cfg_model)
+def eva_4b_20b(**cfg_model):
+    cfg_4b_20b = _EVA_MODELS['eva_4b_20b']
+    cfg_model.update(cfg_4b_20b)
+    return eva_custom(**cfg_model)
+
+
+def eva_8b_20b(**cfg_model):
+    cfg_8b_20b = _EVA_MODELS['eva_8b_20b']
+    cfg_model.update(cfg_8b_20b)
+    return eva_custom(**cfg_model)
+
+
+def eva_18b_20b(**cfg_model):
+    cfg_18b_20b = _EVA_MODELS['eva_18b_20b']
+    cfg_model.update(cfg_18b_20b)
+    return eva_custom(**cfg_model)
