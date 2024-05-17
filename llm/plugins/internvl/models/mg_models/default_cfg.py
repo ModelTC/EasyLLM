@@ -70,7 +70,7 @@ def update_shared_config(cfg):
 
     keep_list = ["num_layers", "parallel_output", "fp16", "bf16", "fp32_residual_connection",
                  "pretrain_causal_attention", "checkpoint_activations", "checkpoint_num_layers",
-                 "dynamic_checkpoint", "pp_partition_method", "sequence_parallel", "num_intern_layers",
+                 "dynamic_checkpoint", "pp_partition_method", "sequence_parallel", "num_vit_layers",
                  "profile_path", "layer_profile"]
     model_defuault.update(cfg)
     cfg = model_defuault
@@ -380,7 +380,7 @@ def update_model_cfg(cfg):
     vision_layer_norm_cfg['type'] = vision_layer_norm_cfg.get('type', "rms_norm")
     vision_layer_norm_cfg['kwargs'] = update_vision_ln_config(vision_layer_norm_cfg.get('kwargs', {}), shared_cfg)
     vision_transformer_layer_cfg = update_vision_transformer_layer_config(vision_transformer_layer_cfg, shared_cfg, vision_layer_norm_cfg)
-    vision_transformer_layer_cfg["num_intern_layers"] = cfg["num_intern_layers"]
+    vision_transformer_layer_cfg["num_vit_layers"] = cfg["num_vit_layers"]
     vision_extract_feat_cfg = update_vision_extract_feat_config(vision_extract_feat_cfg, shared_cfg)
 
     word_embedings_cfg = update_embeding_config(word_embedings_cfg, shared_cfg, as_head=False)

@@ -26,7 +26,7 @@ class EVAAttention(MegatronModule):
         use_flash_attn=False,
         params_dtype=torch.half,
         sequence_parallel=False,
-        qv_bias=False
+        qkv_bias=False
     ):
         super().__init__()
         self.embed_dim = hidden_size
@@ -41,23 +41,23 @@ class EVAAttention(MegatronModule):
             self.embed_dim,
             3 * self.embed_dim,
             gather_output=False,
-            bias=False,
+            bias=qkv_bias,
             params_dtype=params_dtype,
             sequence_parallel=sequence_parallel
         )
 
-        if qv_bias:
-            q_bias = nn.Parameter(torch.zeros(self.embed_dim))
-            v_bias = nn.Parameter(torch.zeros(self.embed_dim))
-            self.register_parameter("q_bias", q_bias)
-            self.register_parameter("v_bias", v_bias)
-        else:
-            q_bias = None
-            v_bias = None
+        # if qkv_bias:
+        #     q_bias = nn.Parameter(torch.zeros(self.embed_dim))
+        #     v_bias = nn.Parameter(torch.zeros(self.embed_dim))
+        #     self.register_parameter("q_bias", q_bias)
+        #     self.register_parameter("v_bias", v_bias)
+        # else:
+        #     q_bias = None
+        #     v_bias = None
 
-        if q_bias is not None:
-            qkv_bias = torch.cat((q_bias, torch.zeros_like(v_bias, requires_grad=False), v_bias))
-            self.qkv.bias = nn.Parameter(qkv_bias)
+        # if q_bias is not None:
+        #     qkv_bias = torch.cat((q_bias, torch.zeros_like(v_bias, requires_grad=False), v_bias))
+        #     self.qkv.bias = nn.Parameter(qkv_bias)
 
         self.projection = RowParallelLinear(
             self.embed_dim,
@@ -198,11 +198,11 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         use_flash_attn,
         params_dtype=torch.half,
         sequence_parallel=False,
-        num_eva_layers=None,
+        num_vit_layers=None,
         vit_select_layer=None,
         layer_norm=None,
         postnorm=False,
-        qv_bias=False
+        qkv_bias=False
     ):
         super().__init__()
         self.embed_dim = hidden_size
@@ -218,7 +218,7 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
             use_flash_attn,
             params_dtype=params_dtype,
             sequence_parallel=sequence_parallel,
-            qv_bias=qv_bias
+            qkv_bias=qkv_bias
         )
         self.mlp = EVAMLP(
             hidden_act,
@@ -232,9 +232,9 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         else:
             self.layer_norm2 = build_layer_norm(layer_norm)
         self.vision_layer_number = vision_layer_number
-        self.num_eva_layers = num_eva_layers
+        self.num_vit_layers = num_vit_layers
         self.vit_select_layer = vit_select_layer
-        assert isinstance(self.num_eva_layers, int), "self.num_eva_layers must be int"
+        assert isinstance(self.num_vit_layers, int), "self.num_vit_layers must be int"
         self.postnorm = postnorm
 
     def forward(self, inputs, **kwargs):
@@ -278,7 +278,7 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
             hidden_states = self.mlp(hidden_states)
 
         hidden_states = hidden_states + residual
-        if self.vision_layer_number >= self.num_eva_layers + self.vit_select_layer:
+        if self.vision_layer_number >= self.num_vit_layers + self.vit_select_layer:
             if len(ori_hidden_states.shape) == 3:
                 ori_hidden_states = ori_hidden_states.unsqueeze(0)
             ori_hidden_states = torch.cat([ori_hidden_states, hidden_states.unsqueeze(0)])

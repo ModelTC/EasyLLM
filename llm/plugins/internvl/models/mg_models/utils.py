@@ -236,7 +236,7 @@ def get_custom_module_param(name, model):
 def hf_to_megatron_internvl(dt, model, is_pack=False):
     output_dt = {}
     llm_num_layers = model.model_kwargs['num_layers']
-    vit_num_layers = model.model_kwargs['num_intern_layers']
+    vit_num_layers = model.model_kwargs['num_vit_layers']
     # huggingface start from index 0
     # easyllm start from index 1
     # vision embedding (1) -> vit layers (vit_num_layers) -> project layer -> llm embemdding -> llm layers -> llm head
@@ -568,7 +568,7 @@ def load_llama_from_hf_format(load_dirs,
     if isinstance(load_dirs, list):
         vit_layers = model.model_kwargs.get('num_husky_layers', None)
         if vit_layers is None:
-            vit_layers = model.model_kwargs.get('num_intern_layers', None)
+            vit_layers = model.model_kwargs.get('num_vit_layers', None)
         assert vit_layers is not None
     else:
         load_dirs = [load_dirs]

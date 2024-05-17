@@ -46,7 +46,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
     def __init__(
         self,
-        num_intern_layers,
+        num_vit_layers,
         num_layers,
         parallel_output=True,
         fp16: bool = False,
@@ -74,7 +74,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.parallel_output = parallel_output
         self.sequence_parallel = sequence_parallel
         # set model args
-        self._set_model_kwargs(num_intern_layers, num_layers, checkpoint_activations)
+        self._set_model_kwargs(num_vit_layers, num_layers, checkpoint_activations)
         self.word_embedings_params = word_embedings_params
         self.transformer_layer_params = transformer_layer_params
         self.layer_norm_params = layer_norm_params
@@ -85,7 +85,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.vision_extract_feat_params = vision_extract_feat_params
         self.drop_path_rate = drop_path_rate
 
-        self.specs = self.build_specs(num_intern_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
+        self.specs = self.build_specs(num_vit_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
         self.loss_fn = LOSS_REGISTRY.build(self.loss_params)
 
         if checkpoint_activations:
@@ -359,8 +359,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
     #         self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
     #     return super().forward(forward_input)
 
-    def _set_model_kwargs(self, num_intern_layers, num_layers, checkpoint_activations):
-        self.model_kwargs = {"num_intern_layers": num_intern_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
+    def _set_model_kwargs(self, num_vit_layers, num_layers, checkpoint_activations):
+        self.model_kwargs = {"num_vit_layers": num_vit_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
 
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
@@ -422,7 +422,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self._set_bounds(start=self.parts[stage_id], stop=self.parts[stage_id + 1])
         logger.info(self.parts)
 
-    def build_specs(self, num_intern_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
+    def build_specs(self, num_vit_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
         specs = []
 
         def _to_float16(inputs):
@@ -437,9 +437,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         specs.append(LayerSpec(VisionEmbeddings, **self.vision_embedings_params))
 
-        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_intern_layers)]
-        # dpr = [0.0 for _ in range(num_intern_layers)]
-        for vision_layer_idx in range(num_intern_layers):
+        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_vit_layers)]
+        # dpr = [0.0 for _ in range(num_vit_layers)]
+        for vision_layer_idx in range(num_vit_layers):
             self.vision_transformer_layer_params.update({'vision_layer_number': vision_layer_idx + 2})
             self.vision_transformer_layer_params['drop_path_rate'] = dpr[vision_layer_idx]
             specs.append(LayerSpec(ParallelVisionTransformerLayerPipe, **self.vision_transformer_layer_params))
@@ -449,7 +449,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.word_embedings_params.update({"fp32_residual_connection": fp32_residual_connection})
         specs.append(LayerSpec(EmbeddingPipe, **self.word_embedings_params))
 
-        for layer_idx in range((num_intern_layers + 4), (num_intern_layers + 4 + num_layers)):
+        for layer_idx in range((num_vit_layers + 4), (num_vit_layers + 4 + num_layers)):
             self.transformer_layer_params.update({'qkv_pack': True})
             self.transformer_layer_params.update({'layer_number': layer_idx})
             specs.append(LayerSpec(ParallelTransformerLayerPipe, **self.transformer_layer_params))
@@ -502,7 +502,7 @@ _HUSKY_MODELS = {
         "intermediate_size": 2048,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
+        "num_vit_layers": 45,  # 45,
         "vision_hidden_size": 400,  # 3200,
         "vision_patch_size": 14,
         "vision_intermediate_size": 1600,  # 12800,
@@ -524,7 +524,7 @@ _HUSKY_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
+        "num_vit_layers": 45,  # 45,
         "vision_hidden_size": 3200,  # 3200,
         "vision_patch_size": 14,
         "vision_intermediate_size": 12800,  # 12800,
@@ -546,7 +546,7 @@ _HUSKY_MODELS = {
         "intermediate_size": 36864,
         "eps": 1e-5,
         # vision
-        "num_intern_layers": 45,  # 45,
+        "num_vit_layers": 45,  # 45,
         "vision_hidden_size": 3200,  # 3200,
         "vision_patch_size": 14,
         "vision_intermediate_size": 12800,  # 12800,

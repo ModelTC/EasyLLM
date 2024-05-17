@@ -9,10 +9,13 @@ for var_name, var in imported_vars:
         MODULE_ZOO_REGISTRY.register(var_name, var)
 
 from .internvl import _HUSKY_MODELS
+from llm.plugins.eva.models.eva import _EVA_MODELS
 
 _ALL_BASE_MODELS = {}
 for key in _HUSKY_MODELS:
     _ALL_BASE_MODELS[key] = _HUSKY_MODELS[key]
+for key in _EVA_MODELS:
+    _ALL_BASE_MODELS[key] = _EVA_MODELS[key]
 
 
 def get_layer_info(cfg_model):

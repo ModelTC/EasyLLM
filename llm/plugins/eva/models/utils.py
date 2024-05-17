@@ -636,9 +636,7 @@ def load_llama_from_hf_format(load_dirs,
     vit_layers = None
     init_set = set()
     if isinstance(load_dirs, list):
-        vit_layers = model.model_kwargs.get('num_eva_layers', None)
-        if vit_layers is None:
-            vit_layers = model.model_kwargs.get('num_intern_layers', None)
+        vit_layers = model.model_kwargs.get('num_vit_layers', None)
         assert vit_layers is not None
     else:
         load_dirs = [load_dirs]

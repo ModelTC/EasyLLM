@@ -46,7 +46,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
 
     def __init__(
         self,
-        num_eva_layers,
+        num_vit_layers,
         num_layers,
         parallel_output=True,
         fp16: bool = False,
@@ -73,7 +73,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         self.parallel_output = parallel_output
         self.sequence_parallel = sequence_parallel
         # set model args
-        self._set_model_kwargs(num_eva_layers, num_layers, checkpoint_activations)
+        self._set_model_kwargs(num_vit_layers, num_layers, checkpoint_activations)
         self.word_embedings_params = word_embedings_params
         self.transformer_layer_params = transformer_layer_params
         self.layer_norm_params = layer_norm_params
@@ -83,7 +83,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         self.vision_transformer_layer_params = vision_transformer_layer_params
         self.vision_extract_feat_params = vision_extract_feat_params
 
-        self.specs = self.build_specs(num_eva_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
+        self.specs = self.build_specs(num_vit_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention)
         self.loss_fn = LOSS_REGISTRY.build(self.loss_params)
         self.img_size = self.vision_embedings_params['image_size']
         self.patch_size = self.vision_embedings_params['patch_size']
@@ -359,8 +359,8 @@ class EVAModelPipe(PipelineModule, MegatronModule):
     #         self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
     #     return super().forward(forward_input)
 
-    def _set_model_kwargs(self, num_eva_layers, num_layers, checkpoint_activations):
-        self.model_kwargs = {"num_eva_layers": num_eva_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
+    def _set_model_kwargs(self, num_vit_layers, num_layers, checkpoint_activations):
+        self.model_kwargs = {"num_vit_layers": num_vit_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
 
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
@@ -422,7 +422,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         self._set_bounds(start=self.parts[stage_id], stop=self.parts[stage_id + 1])
         logger.info(self.parts)
 
-    def build_specs(self, num_eva_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
+    def build_specs(self, num_vit_layers, num_layers, fp16, bf16, fp32_residual_connection, pretrain_causal_attention):
         specs = []
 
         def _to_float16(inputs):
@@ -438,7 +438,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         specs.append(LayerSpec(VisionEmbeddings, **self.vision_embedings_params))
 
         # dpr = [0.0 for _ in range(num_intern_layers)]
-        for vision_layer_idx in range(num_eva_layers):
+        for vision_layer_idx in range(num_vit_layers):
             self.vision_transformer_layer_params.update({'vision_layer_number': vision_layer_idx + 2})
             specs.append(LayerSpec(ParallelVisionTransformerLayerPipe, **self.vision_transformer_layer_params))
 
@@ -447,7 +447,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         self.word_embedings_params.update({"fp32_residual_connection": fp32_residual_connection})
         specs.append(LayerSpec(EmbeddingPipe, **self.word_embedings_params))
 
-        for layer_idx in range((num_eva_layers + 4), (num_eva_layers + 4 + num_layers)):
+        for layer_idx in range((num_vit_layers + 4), (num_vit_layers + 4 + num_layers)):
             self.transformer_layer_params.update({'qkv_pack': True})
             self.transformer_layer_params.update({'layer_number': layer_idx})
             specs.append(LayerSpec(ParallelTransformerLayerPipe, **self.transformer_layer_params))
@@ -500,7 +500,7 @@ _EVA_MODELS = {
         "intermediate_size": 2048,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_eva_layers": 45,  # 45,
+        "num_vit_layers": 45,  # 45,
         "vision_hidden_size": 400,  # 3200,
         "vision_image_size": 448,
         "vision_patch_size": 14,
@@ -519,7 +519,7 @@ _EVA_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_eva_layers": 40,  # 45,
+        "num_vit_layers": 40,  # 45,
         "vision_hidden_size": 1408,  # 3200,
         "vision_image_size": 224, # 224,
         "vision_patch_size": 14,
@@ -529,7 +529,7 @@ _EVA_MODELS = {
         "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
         "postnorm": False,
-        "qv_bias": True
+        "qkv_bias": True
     },
     "eva_4b_20b": {
         "num_layers": 48,  # 48
@@ -539,7 +539,7 @@ _EVA_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_eva_layers": 64,  # 45,
+        "num_vit_layers": 64,  # 45,
         "vision_hidden_size": 1792,  # 3200,
         "vision_image_size": 224, # 224,
         "vision_patch_size": 14,
@@ -549,7 +549,7 @@ _EVA_MODELS = {
         "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
         "postnorm": True,
-        "qv_bias": True
+        "qkv_bias": True
     },
     "eva_8b_20b": {
         "num_layers": 48,  # 48
@@ -559,7 +559,7 @@ _EVA_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_eva_layers": 32,  # 45,
+        "num_vit_layers": 32,  # 45,
         "vision_hidden_size": 4096,  # 3200,
         "vision_image_size": 448, # 224,
         "vision_patch_size": 14,
@@ -569,7 +569,7 @@ _EVA_MODELS = {
         "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
         "postnorm": False,
-        "qv_bias": False
+        "qkv_bias": False
     },
     "eva_18b_20b": {
         "num_layers": 48,  # 48
@@ -579,7 +579,7 @@ _EVA_MODELS = {
         "intermediate_size": 16384,  # 16384,
         "eps": 1e-5,
         # vision
-        "num_eva_layers": 48,  # 45,
+        "num_vit_layers": 48,  # 45,
         "vision_hidden_size": 5120,  # 3200,
         "vision_image_size": 224, # 224,
         "vision_patch_size": 14,
@@ -589,7 +589,7 @@ _EVA_MODELS = {
         "vision_layer_norm_eps": 1e-06,
         "vit_select_layer": -1,
         "postnorm": True,
-        "qv_bias": False
+        "qkv_bias": False
     },
 }
 

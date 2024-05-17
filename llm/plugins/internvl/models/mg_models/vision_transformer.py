@@ -226,7 +226,7 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         use_flash_attn,
         params_dtype=torch.half,
         sequence_parallel=False,
-        num_intern_layers=None,
+        num_vit_layers=None,
         vit_select_layer=None,
         layer_norm=None,
         initializer_factor=0.1,
@@ -260,13 +260,13 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         )
         self.norm2 = build_layer_norm(layer_norm)
         self.vision_layer_number = vision_layer_number
-        self.num_intern_layers = num_intern_layers
+        self.num_vit_layers = num_vit_layers
         self.vit_select_layer = vit_select_layer
         self.ls1 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
         self.ls2 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
         self.drop_path1 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
         self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
-        assert isinstance(self.num_intern_layers, int), "self.num_intern_layers must be int"
+        assert isinstance(self.num_vit_layers, int), "self.num_vit_layers must be int"
 
     def forward(self, inputs, **kwargs):
         # if len(inputs) == 4:
@@ -293,7 +293,7 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         # hidden_states = hidden_states + self.drop_path2(self.mlp(self.norm2(hidden_states=hidden_states,head_mask=attention_mask)) * self.ls2)
         hidden_states = hidden_states + self.drop_path2(self.mlp(self.norm2(hidden_states)) * self.ls2)
 
-        if self.vision_layer_number >= self.num_intern_layers + self.vit_select_layer:
+        if self.vision_layer_number >= self.num_vit_layers + self.vit_select_layer:
             if len(ori_hidden_states.shape) == 3:
                 ori_hidden_states = ori_hidden_states.unsqueeze(0)
             ori_hidden_states = torch.cat([ori_hidden_states, hidden_states.unsqueeze(0)])
