@@ -125,19 +125,23 @@ class EVABaseRunner(BaseRunner):
         freeze_llm = self.config["runtime"].get("freeze_llm", False)
         unfreeze_lm_head = self.config["runtime"].get("unfreeze_lm_head", False)
         freeze_mlp = self.config["runtime"].get("freeze_mlp", False)
+        num_eva_layers = self.model.model_kwargs['num_eva_layers']
+        num_layers = self.model.model_kwargs['num_layers']
         for name, child in self.model.named_children():
             if freeze_vit and name == "tied_modules":
                 self._freeze_params(child, is_eval=True)
-            elif freeze_vit and int(name) < _EVA_MODELS[model_type]["num_eva_layers"] + 2:  # freeze vit
+            elif name == "tied_modules":
+                continue
+            elif freeze_vit and int(name) < num_eva_layers + 2:  # freeze vit
                 self._freeze_params(child, is_eval=True)
-            elif freeze_llm and int(name) >= _EVA_MODELS[model_type]["num_eva_layers"] + 3 and int(name) < _EVA_MODELS[model_type]["num_eva_layers"] + _EVA_MODELS[model_type]["num_layers"] + 7:  # noqa
+            elif freeze_llm and int(name) >= num_eva_layers + 3 and int(name) < num_eva_layers + num_layers + 7:  # noqa
                 self._freeze_params(child, is_eval=True)
-            elif freeze_mlp and int(name) == _EVA_MODELS[model_type]["num_eva_layers"] + 2:
+            elif freeze_mlp and int(name) == num_eva_layers + 2:
                 self._freeze_params(child)
         for name, child in self.model.named_children():
             if name == "tied_modules":
                 continue
-            elif unfreeze_lm_head and int(name) == _EVA_MODELS[model_type]["num_eva_layers"] + _EVA_MODELS[model_type]["num_layers"] + 6:
+            elif unfreeze_lm_head and int(name) == num_eva_layers + num_layers + 6:
                 self._unfreeze_params(child)
 
     def build_trainer(self):

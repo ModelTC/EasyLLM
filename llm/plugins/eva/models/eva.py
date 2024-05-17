@@ -207,14 +207,14 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             elif len(forward_input[0].shape) == 3:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1]
             else:
-                seq_len = self.img_size // self.patch_size * forward_input[-2].shape[0]
+                seq_len = ((self.img_size // self.patch_size) ** 2 + 1) * forward_input[-2].shape[0]
         elif len(forward_input) == 6:
             if len(forward_input[0].shape) == 4:
                 seq_len = forward_input[0].shape[1] * forward_input[0].shape[2]
             elif len(forward_input[0].shape) == 3:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1]
             else:
-                seq_len = self.img_size // self.patch_size * forward_input[-1].shape[0]
+                seq_len = ((self.img_size // self.patch_size) ** 2 + 1) * forward_input[-1].shape[0]
         elif len(forward_input) in (3, 4, 5):
             if self.sequence_parallel:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1] * dist_env.get_tensor_model_parallel_world_size()
@@ -246,7 +246,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             else:
                 seq_len = forward_input.shape[0] * forward_input.shape[1]
         """
-        # print("seq_len:", seq_len)
+        print("seq_len:", seq_len)
         return seq_len
 
     def forward(self, forward_input):
