@@ -6,6 +6,7 @@ from llm.utils.env import dist_env
 from llm.data.nlp_dataset import IGNORE_INDEX
 from llm.utils.general.registry_factory import LOSS_REGISTRY
 from llm.utils.general.log_helper import default_logger as logger
+import torch.distributed as dist
 
 
 @LOSS_REGISTRY.register('softmax_cross_entropy')
@@ -27,69 +28,21 @@ class CrossEntropy(object):
         ignore_mask = (labels == IGNORE_INDEX)
         loss_mask = loss_mask.view(-1)
         loss_mask = loss_mask * (~ignore_mask.view(-1))
-        if self.is_prefix:
-            micro_batch_size, sequence_length = labels.shape
-            average_tokens_per_sample: torch.Tensor
-            if self.loss_on_targets_only:
-                # HACK: This is useful when we obtain loss masks that are microbatch dependent.
-                #   Consequently, if we want to preserve the notion that all tokens have the same
-                #   impact on the loss, we can only normalise using a microbatch independent value.
-                #   It should be expected weight over a microbatch. Here we still use `sequence_length`,
-                #   that's batch size dependent, in order to be backwards compatible with
-                #   current experiment on vanilla gpt.
-                if self.reweight_loss_based_on_position_frequency:
-                    reweight = torch.arange(
-                        sequence_length, 0, -1, dtype=torch.float, device=loss_mask.device
-                    ) / (sequence_length + 1) * 2
-                    average_tokens_per_sample = reweight.flip(-1).cumsum(-1).mean()
-                else:
-                    average_tokens_per_sample = (sequence_length + 1) / 2
-            else:
-                average_tokens_per_sample = sequence_length
-            expected_number_of_tokens = average_tokens_per_sample * micro_batch_size
-        else:
-            expected_number_of_tokens = loss_mask.sum()
-        return expected_number_of_tokens, loss_mask
+        expected_number_of_tokens = loss_mask.sum()
+        dist.all_reduce(expected_number_of_tokens, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
+        return max(expected_number_of_tokens, 1), loss_mask
 
     def __call__(self, inputs, labels):
-        if len(labels) == 3:
-            labels, loss_mask, cu_seqlens = labels[0], labels[1], labels[2]
-        else:
-            labels, loss_mask = labels[0], labels[1]
-            cu_seqlens = None
-        output, loss_mask, labels, cu_seqlens = inputs[0], inputs[1], inputs[2], inputs[3]
+        output, loss_mask, labels = inputs[0], inputs[1], inputs[2]
         if ((labels == -100).sum() == labels.shape[1]):
             bs, d = labels.shape
             ignore_mask = (labels != -100).view(-1)
             loss = output.view(bs * d, -1)[ignore_mask].sum()
             return loss
 
-        losses = vocab_parallel_cross_entropy(output.contiguous().float(),
-                                              labels, self.cut_size)
-        if cu_seqlens is not None:
-            bs = labels.shape[0]
-            loss = []
-            for b in range(bs):
-                single_cu_seqlen = cu_seqlens[b]
-                single_losses = losses[b]
-                single_labels = labels[b]
-                single_loss_mask = loss_mask[b]
-                b_loss = 0.
-                for idx in range(1, len(single_cu_seqlen)):
-                    start, end = single_cu_seqlen[idx - 1], single_cu_seqlen[idx]
-                    single_losses_ = single_losses[start:end]
-                    single_labels_ = single_labels[start:end].unsqueeze(0)
-                    single_loss_mask_ = single_loss_mask[start:end].unsqueeze(0)
-
-                    expected_number_of_tokens, single_loss_mask_ = self.get_expected_number_of_tokens(single_labels_, single_loss_mask_)
-                    b_loss += torch.sum(single_losses_.view(-1) * single_loss_mask_) / max(1, expected_number_of_tokens)
-                if self.packed_mean_loss:
-                    b_loss /= (len(single_cu_seqlen) - 1)
-                loss.append(b_loss)
-            loss = sum(loss)
-        else:
-            expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
-            loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
+        losses = vocab_parallel_cross_entropy(output.contiguous().float(), labels, self.cut_size)
+        expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
+        loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
         return loss
 
 
