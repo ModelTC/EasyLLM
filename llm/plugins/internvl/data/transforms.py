@@ -275,7 +275,6 @@ class InternvlToolParser(object):
             return {'input_ids': input_ids,
                     'labels': labels,
                     'pixel_values': pixel_values,
-                    'attention_mask': input_ids.ne(self.tokenizer.pad_token_id),
                     'image_flags': torch.tensor([1] * num_patches, dtype=torch.long)}
         else:
             if 'input' in meta:
@@ -431,7 +430,6 @@ class InternvlToolParser(object):
             labels = torch.LongTensor(labels)
             results = {'input_ids': input_ids,
                        'labels': labels,
-                       'attention_mask': input_ids.ne(self.tokenizer.pad_token_id),
                        'pixel_values': pixel_values,
                        'image_flags': torch.tensor([0], dtype=torch.long)}
             return results

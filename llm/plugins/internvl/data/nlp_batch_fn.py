@@ -12,8 +12,10 @@ class InternFlashBatchFunction(object):
                  pretrain=False):
         self.tokenizer = tokenizer
         self.eod_mask_loss = eod_mask_loss
-        # self.pad_token_id = len(self.tokenizer) - 1
-        self.pad_token_id = tokenizer.pad_token_id
+        if hasattr(self.tokenizer, "pad_token_id") and self.tokenizer.pad_token_id is not None:
+            self.pad_token_id = tokenizer.pad_token_id
+        else:
+            self.pad_token_id = len(self.tokenizer) - 1
         self.pretrain = pretrain
 
     def __call__(self, data):
