@@ -246,7 +246,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             else:
                 seq_len = forward_input.shape[0] * forward_input.shape[1]
         """
-        print("seq_len:", seq_len)
+        # print("seq_len:", seq_len)
         return seq_len
 
     def forward(self, forward_input):

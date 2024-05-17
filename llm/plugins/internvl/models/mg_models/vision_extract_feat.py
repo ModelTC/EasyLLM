@@ -44,8 +44,15 @@ class VisionExtractFeat(MegatronModule):
         params_dtype = get_torch_dtype(params_dtype)
         self.sequence_parallel = sequence_parallel
 
-        self.mlp1_norm = nn.LayerNorm(vit_hidden_size * 4, dtype=params_dtype)
-        self.mlp1_fc1 = ColumnParallelLinear(vit_hidden_size * 4, llm_hidden_size, gather_output=False, params_dtype=params_dtype)
+        if image_size == 224:
+            hidden_size_scale = 1
+            self.scale_factor = 1
+        else:
+            hidden_size_scale = 4
+            self.scale_factor = 0.5
+
+        self.mlp1_norm = nn.LayerNorm(vit_hidden_size * hidden_size_scale, dtype=params_dtype)
+        self.mlp1_fc1 = ColumnParallelLinear(vit_hidden_size * hidden_size_scale, llm_hidden_size, gather_output=False, params_dtype=params_dtype)
         self.mlp1_act = nn.GELU()
         self.mlp1_fc2 = RowParallelLinear(llm_hidden_size, llm_hidden_size, params_dtype=params_dtype, input_is_parallel=True)
 
@@ -101,7 +108,7 @@ class VisionExtractFeat(MegatronModule):
 
         h = w = int(vit_embeds.shape[1] ** 0.5)
         vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], h, w, -1)
-        vit_embeds = self.pixel_shuffle(vit_embeds, scale_factor=0.5)
+        vit_embeds = self.pixel_shuffle(vit_embeds, scale_factor=self.scale_factor)
         vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
         vit_embeds = self.mlp1_norm(vit_embeds)
         vit_embeds, _ = self.mlp1_fc1(vit_embeds)
