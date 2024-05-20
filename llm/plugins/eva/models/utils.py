@@ -358,33 +358,41 @@ def hf_to_megatron_eva(dt, model, vit_layers):
     # easyllm start from index 1
     # vision embedding (1) -> vit layers (vit_num_layers) -> project layer -> llm embemdding -> llm layers -> llm head
     for key in dt.keys():
-        if 'visual.patch_embed.proj.weight' in key:
+        if 'vision_model.embeddings.patch_embedding.weight' in key:
             output_dt['module.1.patch_embedding.weight'] = dt[key]
-        elif 'visual.patch_embed.proj.bias' in key:
+        elif 'vision_model.embeddings.patch_embedding.bias' in key:
             output_dt['module.1.patch_embedding.bias'] = dt[key]
-        elif 'visual.pos_embed' in key:
-            output_dt['module.1.position_embedding'] = dt[key]
-        elif 'visual.cls_token' in key:
-            output_dt['module.1.class_embedding'] = dt[key]
-        elif 'visual.blocks' in key:
-            layer_id = int(key.split('.')[2]) + 2
-            if 'norm1.weight' in key:
+        elif 'vision_model.embeddings.position_embedding.weight' in key:
+            position_embedding = dt[key].unsqueeze(0)
+            output_dt['module.1.position_embedding'] = position_embedding
+        elif 'vision_model.embeddings.class_embedding' in key:
+            class_embedding = dt[key].unsqueeze(0).unsqueeze(0)
+            output_dt['module.1.class_embedding'] = class_embedding
+        elif 'vision_model.encoder' in key:
+            layer_id = int(key.split('.')[3]) + 2
+            if 'layer_norm1.weight' in key:
                 output_dt[f'module.{layer_id}.layer_norm1.weight'] = dt[key]
-            elif 'norm1.bias' in key:
+            elif 'layer_norm1.bias' in key:
                 output_dt[f'module.{layer_id}.layer_norm1.bias'] = dt[key]
-            elif 'norm2.weight' in key:
+            elif 'layer_norm2.weight' in key:
                 output_dt[f'module.{layer_id}.layer_norm2.weight'] = dt[key]
-            elif 'norm2.bias' in key:
+            elif 'layer_norm2.bias' in key:
                 output_dt[f'module.{layer_id}.layer_norm2.bias'] = dt[key]
-            elif 'attn.q_bias' in key:
-                output_dt[f'module.{layer_id}.self_attn.q_bias'] = dt[key]
-            elif 'attn.v_bias' in key:
-                output_dt[f'module.{layer_id}.self_attn.v_bias'] = dt[key]
-            elif 'attn.qkv.weight' in key:
-                output_dt[f'module.{layer_id}.self_attn.qkv.weight'] = dt[key]
-            elif 'attn.proj.weight' in key:
+            # elif 'attn.q_bias' in key:
+            #     output_dt[f'module.{layer_id}.self_attn.q_bias'] = dt[key]
+            # elif 'attn.v_bias' in key:
+            #     output_dt[f'module.{layer_id}.self_attn.v_bias'] = dt[key]
+            # elif 'attn.qkv.weight' in key:
+            #     output_dt[f'module.{layer_id}.self_attn.qkv.weight'] = dt[key]
+            elif "self_attn.q_proj" in key:
+                output_dt[f'module.{layer_id}.self_attn.q_proj.weight'] = dt[key]
+            elif "self_attn.k_proj" in key:
+                output_dt[f'module.{layer_id}.self_attn.k_proj.weight'] = dt[key]
+            elif "self_attn.v_proj" in key:
+                output_dt[f'module.{layer_id}.self_attn.v_proj.weight'] = dt[key]
+            elif 'self_attn.out_proj.weight' in key:
                 output_dt[f'module.{layer_id}.self_attn.projection.weight'] = dt[key]
-            elif 'attn.proj.bias' in key:
+            elif 'self_attn.out_proj.bias' in key:
                 output_dt[f'module.{layer_id}.self_attn.projection.bias'] = dt[key]
             elif 'mlp.fc1.weight' in key:
                 output_dt[f'module.{layer_id}.mlp.fc1.weight'] = dt[key]

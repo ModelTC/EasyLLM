@@ -26,7 +26,8 @@ class EVAAttention(MegatronModule):
         use_flash_attn=False,
         params_dtype=torch.half,
         sequence_parallel=False,
-        qkv_bias=False
+        qkv_bias=False,
+        qkv_pack=True
     ):
         super().__init__()
         self.embed_dim = hidden_size
@@ -36,15 +37,41 @@ class EVAAttention(MegatronModule):
         self.dropout = nn.Dropout(attention_dropout)
         self.use_flash_attn = use_flash_attn
         self.sequence_parallel = sequence_parallel
+        self.qkv_pack = qkv_pack
 
-        self.qkv = ColumnParallelLinear(
-            self.embed_dim,
-            3 * self.embed_dim,
-            gather_output=False,
-            bias=qkv_bias,
-            params_dtype=params_dtype,
-            sequence_parallel=sequence_parallel
-        )
+        if qkv_pack:
+            self.qkv = ColumnParallelLinear(
+                self.embed_dim,
+                3 * self.embed_dim,
+                gather_output=False,
+                bias=qkv_bias,
+                params_dtype=params_dtype,
+                sequence_parallel=sequence_parallel
+            )
+        else:
+            self.q_proj = ColumnParallelLinear(
+                self.embed_dim,
+                self.embed_dim,
+                gather_output=False,
+                bias=qkv_bias,
+                params_dtype=params_dtype,
+                sequence_parallel=sequence_parallel)
+
+            self.k_proj = ColumnParallelLinear(
+                self.embed_dim,
+                self.embed_dim,
+                gather_output=False,
+                bias=qkv_bias,
+                params_dtype=params_dtype,
+                sequence_parallel=sequence_parallel)
+
+            self.v_proj = ColumnParallelLinear(
+                self.embed_dim,
+                self.embed_dim,
+                gather_output=False,
+                bias=qkv_bias,
+                params_dtype=params_dtype,
+                sequence_parallel=sequence_parallel)
 
         # if qkv_bias:
         #     q_bias = nn.Parameter(torch.zeros(self.embed_dim))
@@ -85,17 +112,37 @@ class EVAAttention(MegatronModule):
         if self.sequence_parallel:
             hidden_states = hidden_states.transpose(0, 1).contiguous()
             tgt_len *= dist_env.get_tensor_model_parallel_world_size()
-        mixed_qkv, _ = self.qkv(hidden_states)
-        if self.sequence_parallel:
-            mixed_qkv = mixed_qkv.transpose(0, 1).contiguous()
-        mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
-            2, 0, 3, 1, 4
-        )
-        query_states, key_states, value_states = (
-            mixed_qkv[0],
-            mixed_qkv[1],
-            mixed_qkv[2],
-        )
+        if self.qkv_pack:
+            mixed_qkv, _ = self.qkv(hidden_states)
+            if self.sequence_parallel:
+                mixed_qkv = mixed_qkv.transpose(0, 1).contiguous()
+            mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
+                2, 0, 3, 1, 4
+            )
+            query_states, key_states, value_states = (
+                mixed_qkv[0],
+                mixed_qkv[1],
+                mixed_qkv[2],
+            )
+        else:
+            query_states, _ = self.q_proj(hidden_states)
+            key_states, _ = self.k_proj(hidden_states)
+            value_states, _ = self.v_proj(hidden_states)
+
+            if self.sequence_parallel:
+                query_states = query_states.transpose(0, 1).contiguous()
+                key_states = key_states.transpose(0, 1).contiguous()
+                value_states = value_states.transpose(0, 1).contiguous()
+
+            query_states = query_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
+                0, 2, 1, 3
+            )
+            key_states = key_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
+                0, 2, 1, 3
+            )
+            value_states = value_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
+                0, 2, 1, 3
+            )
 
         # attention
         if self.use_flash_attn:
@@ -202,7 +249,8 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
         vit_select_layer=None,
         layer_norm=None,
         postnorm=False,
-        qkv_bias=False
+        qkv_bias=False,
+        qkv_pack=True
     ):
         super().__init__()
         self.embed_dim = hidden_size
@@ -218,7 +266,8 @@ class ParallelVisionTransformerLayerPipe(MegatronModule):
             use_flash_attn,
             params_dtype=params_dtype,
             sequence_parallel=sequence_parallel,
-            qkv_bias=qkv_bias
+            qkv_bias=qkv_bias,
+            qkv_pack=qkv_pack
         )
         self.mlp = EVAMLP(
             hidden_act,

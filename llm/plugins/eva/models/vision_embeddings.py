@@ -27,7 +27,7 @@ class VisionEmbeddings(MegatronModule):
         self.sequence_parallel = sequence_parallel
 
         class_embedding = nn.Parameter(
-            torch.zeros(1, 1, self.embed_dim),
+            torch.randn(1, 1, self.embed_dim),
         )
 
         self.register_parameter("class_embedding", class_embedding)
@@ -40,7 +40,7 @@ class VisionEmbeddings(MegatronModule):
         self.num_patches = (self.image_size // self.patch_size) ** 2
         self.num_positions = self.num_patches + 1
 
-        position_embedding = nn.Parameter(torch.zeros(1, self.num_positions, self.embed_dim))
+        position_embedding = nn.Parameter(torch.randn(1, self.num_positions, self.embed_dim))
         self.register_parameter("position_embedding", position_embedding)
 
     def forward(self, inputs, **kwargs):

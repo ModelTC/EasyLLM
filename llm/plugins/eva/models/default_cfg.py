@@ -48,6 +48,7 @@ _SHARED_DEFAULT_CONFIG = {
     "vision_sequence_parallel": False,
     "postnorm": False,
     "qkv_bias": False,
+    "qkv_pack": True
 }
 
 
@@ -318,7 +319,8 @@ def update_vision_transformer_layer_config(cfg, shared_default, layer_norm_cfg):
                            "sequence_parallel": "vision_sequence_parallel",
                            "vit_select_layer": "vit_select_layer",
                            "postnorm": "postnorm",
-                           "qkv_bias": "qkv_bias"}
+                           "qkv_bias": "qkv_bias",
+                           "qkv_pack": "qkv_pack"}
     for emk in shared_keys_mapping:
         sk = shared_keys_mapping[emk]
         vision_transformer_layer_defualt.update({emk: shared_default[sk]})

@@ -48,6 +48,8 @@ class VisionExtractFeat(MegatronModule):
         # N, H * scale, W, C // scale --> N, H * scale, W * scale, C // (scale ** 2)
         x = x.view(n, int(h * scale_factor), int(w * scale_factor),
                    int(c / (scale_factor * scale_factor)))
+        # ps_version v2
+        x = x.permute(0, 2, 1, 3).contiguous()
         return x
 
     def forward(self, inputs, **kwargs):
