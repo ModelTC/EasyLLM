@@ -311,14 +311,15 @@ class InternModelPipe(PipelineModule, MegatronModule):
             vit_prev_memory = self.pp_profile[begin_num - 1]['free_memory']
             llm_cost_memory = vit_cur_memory - vit_prev_memory
             llm_ckpt_num = self.pp_checkpoint_num[pp_rank] - self.pp_profile[begin_num - 1]['ckpt_num']
-        gather_tensor = torch.FloatTensor([vit_cost_memory, llm_cost_memory]).cuda()
-        tensor_list = [torch.empty((2,), dtype=torch.float32, device=gather_tensor.device) for _ in world_size]
+        # gather_tensor = torch.FloatTensor([vit_cost_memory, llm_cost_memory]).cuda()
+        # tensor_list = [torch.empty((2,), dtype=torch.float32, device=gather_tensor.device) for _ in world_size]
+        output = [None for _ in world_size]
         import torch.distributed as dist
-        dist.all_gather(tensor_list, gather_tensor, group=dist_env.get_pipeline_model_parallel_group())
+        dist.all_gather(output, [vit_cost_memory, llm_cost_memory], group=dist_env.get_pipeline_model_parallel_group())
         vit_llm_memory_cost = [0, 0]
-        for item in tensor_list:
-            vit_llm_memory_cost[0] += item.cpu()[0]
-            vit_llm_memory_cost[1] += item.cpu()[1]
+        for item in output:
+            vit_llm_memory_cost[0] += item[0]
+            vit_llm_memory_cost[1] += item[1]
         self.memory_cost_vit_llm = [vit_llm_memory_cost[0] / max(vit_ckpt_num, 1), vit_llm_memory_cost[1] / max(llm_ckpt_num, 1)]
 
     def adjust_ckpt_num_warmup(self):
