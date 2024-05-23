@@ -13,7 +13,7 @@ IGNORE_INDEX = -100
 @dataclass
 @BATCH_COLLECTOR_REGISTRY.register('internvl')
 class InternvlCollector(BatchAlignCollector):
-    def __init__(self, tokenizer, alignment=1):
+    def __init__(self, tokenizer, alignment=1, offset_label=True):
         super().__init__(tokenizer, alignment=alignment)
 
     def __call__(self, instances, pad_id=0):

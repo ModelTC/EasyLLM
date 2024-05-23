@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Any, Optional, Tuple, Union
+from typing import Optional
 
 from transformers.activations import ACT2FN
 from llm.models.mg_models.base_modules.modules.meg_module import MegatronModule
@@ -116,9 +116,11 @@ class EVAAttention(MegatronModule):
             mixed_qkv, _ = self.qkv(hidden_states)
             if self.sequence_parallel:
                 mixed_qkv = mixed_qkv.transpose(0, 1).contiguous()
-            mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
-                2, 0, 3, 1, 4
-            )
+            mixed_qkv = mixed_qkv.reshape(bsz,
+                                          tgt_len,
+                                          3,
+                                          self.num_heads // dist_env.get_tensor_model_parallel_world_size(),
+                                          embed_dim // self.num_heads).permute(2, 0, 3, 1, 4)
             query_states, key_states, value_states = (
                 mixed_qkv[0],
                 mixed_qkv[1],
@@ -134,15 +136,18 @@ class EVAAttention(MegatronModule):
                 key_states = key_states.transpose(0, 1).contiguous()
                 value_states = value_states.transpose(0, 1).contiguous()
 
-            query_states = query_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
-                0, 2, 1, 3
-            )
-            key_states = key_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
-                0, 2, 1, 3
-            )
-            value_states = value_states.reshape(bsz, tgt_len, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads).permute(
-                0, 2, 1, 3
-            )
+            query_states = query_states.reshape(bsz,
+                                                tgt_len,
+                                                self.num_heads // dist_env.get_tensor_model_parallel_world_size(),
+                                                embed_dim // self.num_heads).permute(0, 2, 1, 3)
+            key_states = key_states.reshape(bsz,
+                                            tgt_len,
+                                            self.num_heads // dist_env.get_tensor_model_parallel_world_size(),
+                                            embed_dim // self.num_heads).permute(0, 2, 1, 3)
+            value_states = value_states.reshape(bsz,
+                                                tgt_len,
+                                                self.num_heads // dist_env.get_tensor_model_parallel_world_size(),
+                                                embed_dim // self.num_heads).permute(0, 2, 1, 3)
 
         # attention
         if self.use_flash_attn:

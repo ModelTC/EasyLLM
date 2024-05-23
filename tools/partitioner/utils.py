@@ -4,6 +4,7 @@ from bisect import bisect_left
 
 file_template = "layer_time_pp{}_tp{}.json"
 
+
 def load_stats(dump_dir, NUM_LAYER, NUM_PP, NUM_TP):
     path_template = f"{dump_dir}/{file_template}"
     stats = [[] for _ in range(NUM_LAYER)]
@@ -17,6 +18,7 @@ def load_stats(dump_dir, NUM_LAYER, NUM_PP, NUM_TP):
                     stats[data['layer_idx']].append(float(data['time']))
     return stats
 
+
 def get_avg_stats(stats, warmup_iter=1, verbose=True):
     avg_stats = []
     for layer_idx in range(len(stats)):
@@ -25,6 +27,7 @@ def get_avg_stats(stats, warmup_iter=1, verbose=True):
         if verbose:
             print(f'layer {layer_idx}, time {avg_stats[layer_idx]}')
     return avg_stats
+
 
 def prefix_sum_inc(weights):
     """ Compute an inclusive prefix sum.
@@ -37,6 +40,7 @@ def prefix_sum_inc(weights):
     for x in range(1, len(weights_)):
         weights_[x] += weights_[x - 1]
     return weights_
+
 
 def _rb_partition_balanced(weights, num_parts, eps):
     total_weight = weights[-1]
@@ -52,6 +56,7 @@ def _rb_partition_balanced(weights, num_parts, eps):
         else:
             lower = mid + eps
     return upper
+
 
 def _lprobe(weights, num_parts, bottleneck):
     num_items = len(weights)
@@ -82,9 +87,10 @@ def _lprobe(weights, num_parts, bottleneck):
         bsum = weights[parts[p] - 1] + bottleneck
 
     return parts, bsum >= total_weight
-    
+
+
 def partition_balanced(weights, num_parts, eps=1e-3):
-    num_items = len(weights)
+    # num_items = len(weights)
     weights_ = prefix_sum_inc(weights)
 
     # Find the smallest bottleneck (weight of heaviest partition)
@@ -100,7 +106,7 @@ def partition_balanced(weights, num_parts, eps=1e-3):
 def print_time(parts):
     for pp_rank in range(NUM_PP):
         start = parts[pp_rank]
-        end = parts[pp_rank+1]
+        end = parts[pp_rank + 1]
         forward_time = sum(avg_stats[start:end])
         print(f'pp rank {pp_rank}, forward time {forward_time}')
 
@@ -108,7 +114,8 @@ def print_time(parts):
 def compute_forward_time(dump_dir='./', NUM_PP=4, NUM_TP=2, NUM_LAYER=101, warmup_iter=1):
     stats = load_stats(dump_dir, NUM_LAYER, NUM_PP, NUM_TP)
     avg_stats = get_avg_stats(stats)
-    return avg_stats 
+    return avg_stats
+
 
 if __name__ == '__main__':
     NUM_PP = 4

@@ -142,7 +142,7 @@ class BaseRunner(object):
                 infer_type = cfg_data[data_type].get('infer_type', 'interactive')
                 if infer_type == 'interactive':
                     continue        # skip build data_iterators for inference mode
-            data_iterator, dataset_size = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type) # noqa
+            data_iterator, dataset_size = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type)  # noqa
             self.data_iterators[data_type] = data_iterator
         if self.training:
             epoch = self.config['trainer'].get('epoch', -1)
@@ -242,7 +242,7 @@ class BaseRunner(object):
         cfg_saver = self.config['saver']
         save_interval = cfg_saver.get('save_interval', 0)
         if not cfg_saver.get('enabled', True):
-            return 
+            return
         if (save_interval and (cur_iter + 1) % save_interval == 0) or (cur_iter + 1 == self.total_train_iters):
             save_checkpoint((cur_iter + 1), self.consumed_train_samples, self.consumed_train_tokens,
                             self.model, cfg_saver, self.lora_mode, self.cfg_lora)
@@ -274,7 +274,7 @@ class BaseRunner(object):
         self.model.set_batch_fn(self.batch_pipe_func[data_type])
         if hasattr(self.model, 'set_train_status'):
             self.model.set_train_status(self.model, self.lora_mode)
-        else:   
+        else:
             self.model.train()
 
         for iteration in range(self.start_iteration, self.total_train_iters):
@@ -296,7 +296,6 @@ class BaseRunner(object):
         self._hooks('after_train')
         if hasattr(self.model.module, "verbose_profile") or hasattr(self.model.module, "profile_path"):
             self.model.module.save_profile()
-
 
     def generate(self):
         args = self.args

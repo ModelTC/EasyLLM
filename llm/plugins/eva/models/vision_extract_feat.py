@@ -38,7 +38,7 @@ class VisionExtractFeat(MegatronModule):
 
         self.image_size = image_size
         self.patch_size = patch_size
-    
+
     def pixel_shuffle(self, x, scale_factor=0.5):
         n, w, h, c = x.size()
         # N, W, H, C --> N, W, H * scale, C // scale
@@ -59,7 +59,7 @@ class VisionExtractFeat(MegatronModule):
             hidden_states, input_ids, position_ids, attention_mask, image_flags, labels, cu_seqlens = inputs
         else:
             raise NotImplementedError
-    
+
         if (image_flags == 0).all():
             fake_loss = hidden_states
             for param in self.mlp1_norm.parameters():

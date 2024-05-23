@@ -29,13 +29,15 @@ import torch.nn as nn
 import os
 try:
     from pynvml import *
-except:
+except BaseException:
     pass
+
 
 def get_time():
     import time
     torch.cuda.synchronize()
     return time.time()
+
 
 class EVAModelPipe(PipelineModule, MegatronModule):
     """
@@ -109,7 +111,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             partition_method = 'type:transformer'
 
         self.profile_path = profile_path
-        self.layer_profile  = layer_profile
+        self.layer_profile = layer_profile
 
         super().__init__(layers=self.specs,
                          loss_fn=self.loss_fn,
@@ -178,15 +180,15 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                     range_size = range_size[pp_rank]
                 return range_size
         return -1
-    
+
     def get_layer_idx(self, start_idx):
-        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         return start_idx + self.parts[pp_rank]
-    
+
     def save_profile(self):
         for item in self.layer_profile_info:
             dist_save_obj_to_json(item, 'layer_time', self.profile_path)
-        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         for info in self.pp_profile:
             import json
             with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
@@ -292,7 +294,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 st_time = get_time()
             if self.layer_profile:
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
-                tp_rank = dist_env.get_tensor_model_parallel_rank()
+                # tp_rank = dist_env.get_tensor_model_parallel_rank()
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
                     layer_idx = self.get_layer_idx(start_idx)
@@ -315,7 +317,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                             x = self.activation_checkpoint_func(exec_range_func(start_idx, end_idx), *x)
                         else:
                             x = exec_range_func(start_idx, end_idx)(*x)
-                    # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path) 
+                    # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path)
                     self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
@@ -521,7 +523,7 @@ _EVA_MODELS = {
         # vision
         "num_vit_layers": 40,  # 45,
         "vision_hidden_size": 1408,  # 3200,
-        "vision_image_size": 224, # 224,
+        "vision_image_size": 224,  # 224,
         "vision_patch_size": 14,
         "vision_intermediate_size": 6144,  # 12800,
         "vision_num_attention_heads": 16,  # 25,
@@ -541,7 +543,7 @@ _EVA_MODELS = {
         # vision
         "num_vit_layers": 64,  # 45,
         "vision_hidden_size": 1792,  # 3200,
-        "vision_image_size": 224, # 224,
+        "vision_image_size": 224,  # 224,
         "vision_patch_size": 14,
         "vision_intermediate_size": 15360,  # 12800,
         "vision_num_attention_heads": 16,  # 25,
@@ -561,7 +563,7 @@ _EVA_MODELS = {
         # vision
         "num_vit_layers": 32,  # 45,
         "vision_hidden_size": 4096,  # 3200,
-        "vision_image_size": 448, # 224,
+        "vision_image_size": 448,  # 224,
         "vision_patch_size": 14,
         "vision_intermediate_size": 20480,  # 12800,
         "vision_num_attention_heads": 32,  # 25,
@@ -581,7 +583,7 @@ _EVA_MODELS = {
         # vision
         "num_vit_layers": 48,  # 45,
         "vision_hidden_size": 5120,  # 3200,
-        "vision_image_size": 224, # 224,
+        "vision_image_size": 224,  # 224,
         "vision_patch_size": 14,
         "vision_intermediate_size": 25600,  # 12800,
         "vision_num_attention_heads": 40,  # 25,

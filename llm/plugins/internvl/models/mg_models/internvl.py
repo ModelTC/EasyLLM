@@ -29,13 +29,15 @@ import torch.nn as nn
 import os
 try:
     from pynvml import *
-except:
+except BaseException:
     pass
+
 
 def get_time():
     import time
     torch.cuda.synchronize()
     return time.time()
+
 
 class InternModelPipe(PipelineModule, MegatronModule):
     """
@@ -109,7 +111,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
             partition_method = 'type:transformer'
 
         self.profile_path = profile_path
-        self.layer_profile  = layer_profile
+        self.layer_profile = layer_profile
 
         super().__init__(layers=self.specs,
                          loss_fn=self.loss_fn,
@@ -180,13 +182,13 @@ class InternModelPipe(PipelineModule, MegatronModule):
         return -1
 
     def get_layer_idx(self, start_idx):
-        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         return start_idx + self.parts[pp_rank]
-    
+
     def save_profile(self):
         for item in self.layer_profile_info:
             dist_save_obj_to_json(item, 'layer_time', self.profile_path)
-        pp_rank  = dist_env.get_pipeline_model_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         for info in self.pp_profile:
             import json
             with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
@@ -292,7 +294,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 st_time = get_time()
             if self.layer_profile:
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
-                tp_rank = dist_env.get_tensor_model_parallel_rank()
+                # tp_rank = dist_env.get_tensor_model_parallel_rank()
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
                     layer_idx = self.get_layer_idx(start_idx)
@@ -315,7 +317,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                             x = self.activation_checkpoint_func(exec_range_func(start_idx, end_idx), *x)
                         else:
                             x = exec_range_func(start_idx, end_idx)(*x)
-                    # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path) 
+                    # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path)
                     self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):

@@ -119,7 +119,7 @@ class HuskyBaseRunner(BaseRunner):
         img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
         self.config["model"]["kwargs"]["img_context_token_id"] = img_context_token_id
         super().build_model()
-        model_type = self.config["model"]["type"]
+        # model_type = self.config["model"]["type"]
         freeze_vit = self.config["runtime"].get("freeze_vit", False)
         freeze_llm = self.config["runtime"].get("freeze_llm", False)
         unfreeze_lm_head = self.config["runtime"].get("unfreeze_lm_head", False)

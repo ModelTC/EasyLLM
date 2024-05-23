@@ -1,11 +1,5 @@
-from .eva import (
-    eva_custom,
-    eva_mini,
-    eva_1b_20b,
-    eva_4b_20b,
-    eva_8b_20b,
-    eva_18b_20b
-)
+from .eva import _EVA_MODELS
+from .eva import eva_custom, eva_mini, eva_1b_20b, eva_4b_20b, eva_8b_20b, eva_18b_20b  # noqa
 
 from llm.utils.general.registry_factory import MODULE_ZOO_REGISTRY
 
@@ -15,11 +9,11 @@ for var_name, var in imported_vars:
     if callable(var):
         MODULE_ZOO_REGISTRY.register(var_name, var)
 
-from .eva import _EVA_MODELS
 
 _ALL_BASE_MODELS = {}
 for key in _EVA_MODELS:
     _ALL_BASE_MODELS[key] = _EVA_MODELS[key]
+
 
 def get_layer_info(cfg_model):
     model_type = cfg_model['type']

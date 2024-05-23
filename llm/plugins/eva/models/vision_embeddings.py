@@ -33,7 +33,14 @@ class VisionEmbeddings(MegatronModule):
         self.register_parameter("class_embedding", class_embedding)
 
         self.patch_embedding = ColumnParallelConv2d(
-            input_channel=3, output_channel=self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size, gather_output=True, bias=True, padding=0, params_dtype=params_dtype
+            input_channel=3,
+            output_channel=self.embed_dim,
+            kernel_size=self.patch_size,
+            stride=self.patch_size,
+            gather_output=True,
+            bias=True,
+            padding=0,
+            params_dtype=params_dtype
         )
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -57,7 +64,7 @@ class VisionEmbeddings(MegatronModule):
                 fake_loss += (param * 0).sum()
             fake_loss += (self.position_embedding.data * 0).sum()
             fake_loss += (self.class_embedding.data * 0).sum()
-        
+
             if len(inputs) == 6:
                 return fake_loss, input_ids, position_ids, attention_mask, image_flags, labels
             else:

@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import torch.nn as nn
 import os
 import re
@@ -973,6 +974,7 @@ class DropPath(nn.Module):
     def extra_repr(self):
         return f'drop_prob={round(self.drop_prob,3):0.3f}'
 
+
 def dist_save_obj_to_json(data, name, save_dir='./'):
     pp = dist_env.get_pipeline_model_parallel_rank()
     tp = dist_env.get_tensor_model_parallel_rank()
@@ -981,6 +983,7 @@ def dist_save_obj_to_json(data, name, save_dir='./'):
     with open(filepath, 'a') as f:
         print(json.dumps(data), file=f, flush=True)
 
+
 def reduce_list_data(list_data):
     tensor = torch.tensor(list_data, dtype=torch.int).cuda()
     torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
@@ -988,7 +991,6 @@ def reduce_list_data(list_data):
     list_data = tensor.tolist()
     return list_data
 
-from contextlib import contextmanager
 
 @contextmanager
 def measure_time(label='', _print=True):
