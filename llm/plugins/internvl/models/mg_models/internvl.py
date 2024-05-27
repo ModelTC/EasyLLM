@@ -126,9 +126,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
         if dynamic_checkpoint is not None:
             if dynamic_checkpoint['enabled']:
                 self.size_map = dynamic_checkpoint['size_map']
-            if 'dc_profile' in dynamic_checkpoint:
-                if dynamic_checkpoint['dc_profile'].get('enabled', True):
-                    self.dc_profile = dynamic_checkpoint['dc_profile']
+                if 'dc_profile' in dynamic_checkpoint:
+                    if dynamic_checkpoint['dc_profile'].get('enabled', True):
+                        self.dc_profile = dynamic_checkpoint['dc_profile']
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         pp_size = dist_env.get_pipeline_model_parallel_world_size()
         self.checkpoint_list = []
@@ -556,7 +556,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                         torch.cuda.empty_cache()
                         torch.cuda.memory.reset_peak_memory_stats()
                         import time
-                        time.sleep(0.3)
+                        time.sleep(0.1)
                 memory_info = nvmlDeviceGetMemoryInfo(handle)
                 info = {}
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
