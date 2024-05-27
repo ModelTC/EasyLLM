@@ -127,7 +127,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
             if dynamic_checkpoint['enabled']:
                 self.size_map = dynamic_checkpoint['size_map']
             if 'dc_profile' in dynamic_checkpoint:
-                self.dc_profile = dynamic_checkpoint['dc_profile']
+                if dynamic_checkpoint['dc_profile'].get('enabled', True):
+                    self.dc_profile = dynamic_checkpoint['dc_profile']
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         pp_size = dist_env.get_pipeline_model_parallel_world_size()
         self.checkpoint_list = []
