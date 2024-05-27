@@ -153,6 +153,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.pp_profile = []
         if self.dc_profile is not None:
             self.get_vit_llm_checkpoint_info(num_vit_layers, num_layers)
+            self.layer_profile = False
 
     def get_vit_llm_checkpoint_info(self, num_vit_layer, num_llm_layer):
         # (to_bfloat16) + (vit embedding) + num_vit_layer + (mlp) + llm embedding + num_llm_layer + other 4 layer  # noqa
@@ -187,7 +188,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         self.memory_cost_vit_llm = [0, 0]
         self.warmup_iter = self.dc_profile.get("warmup_iter", 5)
         global_batch_size = self.dc_profile['global_batch_size']
-        self.mirco_batch = global_batch_size // dist_env.get_data_parallel_world_size()
+        self.micro_batches = global_batch_size // dist_env.get_data_parallel_world_size()
         self.min_free_memory = 1000 * 1024
 
     def _is_checkpointable(self, funcs):
@@ -228,13 +229,16 @@ class InternModelPipe(PipelineModule, MegatronModule):
         return start_idx + self.parts[pp_rank]
 
     def save_profile(self):
-        for item in self.layer_profile_info:
-            dist_save_obj_to_json(item, 'layer_time', self.profile_path)
-        pp_rank = dist_env.get_pipeline_model_parallel_rank()
-        for info in self.pp_profile:
-            import json
-            with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
-                print(json.dumps(info), file=f, flush=True)
+        if self.profile_path is not None:
+            if self.layer_profile:
+                for item in self.layer_profile_info:
+                    dist_save_obj_to_json(item, 'layer_time', self.profile_path)
+            pp_rank = dist_env.get_pipeline_model_parallel_rank()
+            if self.dc_profile is None:
+                for info in self.pp_profile:
+                    import json
+                    with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
+                        print(json.dumps(info), file=f, flush=True)
 
     def get_seq_len(self, forward_input):
         # first stage
@@ -288,6 +292,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
     def get_vit_llm_memory_cost(self):
         tp_rank = dist_env.get_tensor_model_parallel_rank()
         dp_rank = dist_env.get_data_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         world_size = dist_env.get_pipeline_model_parallel_world_size()
         pp_profile_list = []
         import json
@@ -345,7 +350,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
         else:
             with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt"), "a") as f:
                 print(json.dumps(self.memory_cost_vit_llm), file=f, flush=True)
-        print("vit llm memory cost", self.memory_cost_vit_llm)
+        print(pp_rank, "vit llm memory cost", self.memory_cost_vit_llm)
+        print(pp_rank, "cost memory info", cost_memory1, cost_memory2, vit_nockpt_num1, llm_nockpt_num1, vit_nockpt_num2, llm_nockpt_num2)
 
     def ave_free_memory(self):
         free_memory_list = []
@@ -372,28 +378,16 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         step_num = self.warmup_iter // 2 + 1
 
-        if self.micro_offset < self.mirco_batch * step_num:
+        if self.micro_offset < self.micro_batches * step_num:
             self.warmup_ckpt_num = ckpt_num
-        elif self.micro_offset == self.mirco_batch * step_num:
+        elif self.micro_offset == self.micro_batches * step_num:
+            vit_memory_estimate = self.dc_profile.get('vit_memory_estimate', 2)
+            llm_memory_estimate = self.dc_profile.get('llm_memory_estimate', 1)
             free_memory = self.ave_free_memory()
             if rank == 0:  # for vision
-                if free_memory > 1024 * 20:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 10
-                elif free_memory > 1024 * 10:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 6
-                elif free_memory > 1024 * 5:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 3
-                else:
-                    pass
+                ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * vit_memory_estimate)
             if rank == world_size - 1:  # for llm
-                if free_memory > 1024 * 20:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 15
-                elif free_memory > 1024 * 10:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 10
-                elif free_memory > 1024 * 5:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 5
-                elif free_memory > 1024 * 3:
-                    ckpt_num = self.pp_checkpoint_num[rank] - 3
+                ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * llm_memory_estimate)
             self.warmup_ckpt_num = ckpt_num
         return max(self.warmup_ckpt_num, 1)
 
@@ -452,10 +446,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         self.micro_offset += 1
         if self.dc_profile is not None:
-            if self.micro_offset == (self.warmup_iter - 1) * self.mirco_batch:
-                self.save_profile()
-            if self.micro_offset == self.warmup_iter * self.mirco_batch:
-                self.save_profile()
+            # if self.micro_offset == (self.warmup_iter - 1) * self.micro_batches:
+            #     self.save_profile()
+            if self.micro_offset == self.warmup_iter * self.micro_batches:
+                # self.save_profile()
                 self.get_vit_llm_memory_cost()
 
         def exec_range_func(start, end):
@@ -521,9 +515,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
                 if self.dc_profile is not None:
-                    if self.micro_offset <= self.warmup_iter * self.mirco_batch:
+                    if self.micro_offset <= self.warmup_iter * self.micro_batches:
                         step_num = self.warmup_iter // 2
-                        if self.micro_offset > self.mirco_batch * step_num:
+                        if self.micro_offset > self.micro_batches * step_num:
                             self.skip_checkpoint_layer_range = self.adjust_ckpt_num_warmup()
                         else:
                             self.skip_checkpoint_layer_range = self.pp_checkpoint_num[pp_rank]
@@ -557,10 +551,11 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 end_time = get_time()
                 cur_time = end_time - st_time
                 if self.dc_profile is not None:
-                    if self.micro_offset <= self.mirco_batch * self.warmup_iter:
+                    if self.micro_offset <= self.micro_batches * self.warmup_iter:
                         torch.cuda.empty_cache()
+                        torch.cuda.memory.reset_peak_memory_stats()
                         import time
-                        time.sleep(0.1)
+                        time.sleep(0.3)
                 memory_info = nvmlDeviceGetMemoryInfo(handle)
                 info = {}
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
@@ -574,8 +569,11 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 info['used_memory'] = memory_info.used // (1024**2)
                 info['free_memory'] = memory_info.free // (1024**2)
                 if self.dc_profile is not None:
-                    if self.micro_offset > self.mirco_batch:
+                    if self.micro_offset > self.micro_batches:
                         self.pp_profile.append(info)
+                        import json
+                        with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
+                            print(json.dumps(info), file=f, flush=True)
                 else:
                     self.pp_profile.append(info)
         return x
