@@ -71,8 +71,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         vision_extract_feat_params=None,
         drop_path_rate=0.0,
         profile_path=None,
-        layer_profile=False,
-        global_batch_size=-1,
+        layer_profile=False
     ):
 
         self.parallel_output = parallel_output
@@ -123,9 +122,12 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         self.size_map = None
         self.skip_checkpoint_layer_range = -1
+        self.dc_profile = None
         if dynamic_checkpoint is not None:
             if dynamic_checkpoint['enabled']:
                 self.size_map = dynamic_checkpoint['size_map']
+            if 'dc_profile' in dynamic_checkpoint:
+                self.dc_profile = dynamic_checkpoint['dc_profile']
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         pp_size = dist_env.get_pipeline_model_parallel_world_size()
         self.checkpoint_list = []
@@ -149,9 +151,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     print(json.dumps(self.parts), file=f, flush=True)
         self.layer_profile_info = []
         self.pp_profile = []
-        self.get_vit_llm_checkpoint_info(num_vit_layers, num_layers, global_batch_size)
+        if self.dc_profile is not None:
+            self.get_vit_llm_checkpoint_info(num_vit_layers, num_layers)
 
-    def get_vit_llm_checkpoint_info(self, num_vit_layer, num_llm_layer, global_batch_size):
+    def get_vit_llm_checkpoint_info(self, num_vit_layer, num_llm_layer):
         # (to_bfloat16) + (vit embedding) + num_vit_layer + (mlp) + llm embedding + num_llm_layer + other 4 layer  # noqa
         self.pp_checkpoint_num = []
         self.pp_vit_llm_layer_num = []
@@ -182,10 +185,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         self.pp_status = 0
         self.memory_cost_vit_llm = [0, 0]
-        self.warmup_iter = 5
+        self.warmup_iter = self.dc_profile.get("warmup_iter", 5)
+        global_batch_size = self.dc_profile['global_batch_size']
         self.mirco_batch = global_batch_size // dist_env.get_data_parallel_world_size()
         self.min_free_memory = 1000 * 1024
-
 
     def _is_checkpointable(self, funcs):
         # return False
@@ -264,12 +267,6 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
         return seq_len
 
-    def get_cur_iter(self):
-        cur_iter = -1
-        if self.micro_offset % self.mirco_batch == 0:
-            cur_iter = self.micro_offset // self.mirco_batch
-        return cur_iter
-    
     def get_vit_llm_nockpt_num(self, ckpt_num, pp_rank=0):
         vit_nockpt_num = 0
         llm_nockpt_num = 0
@@ -289,8 +286,6 @@ class InternModelPipe(PipelineModule, MegatronModule):
         return vit_nockpt_num, llm_nockpt_num
 
     def get_vit_llm_memory_cost(self):
-  
-        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         tp_rank = dist_env.get_tensor_model_parallel_rank()
         dp_rank = dist_env.get_data_parallel_rank()
         world_size = dist_env.get_pipeline_model_parallel_world_size()
@@ -302,11 +297,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 for line in f.readlines():
                     try:
                         temp.append(json.loads(line))
-                    except:
+                    except: # noqa
                         pass
             pp_profile_list.append(temp)
 
-        from statistics import mean
         cost_dict1 = {}
         for item in pp_profile_list[0]:
             if item['ckpt_num'] not in cost_dict1:
@@ -318,7 +312,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         cost_memory1 = float(cost_dict1[keys[-1]][-1] - cost_dict1[keys[0]][-1])
 
         vit_nockpt_num1, llm_nockpt_num1 = self.get_vit_llm_nockpt_num(keys[0], 0)
-        
+
         cost_dict2 = {}
         for item in pp_profile_list[-1]:
             if item['ckpt_num'] not in cost_dict2:
@@ -369,20 +363,20 @@ class InternModelPipe(PipelineModule, MegatronModule):
         for i in gather_tp:
             min_free_memory = min(min(i), min_free_memory)
 
-        return min_free_memory  
+        return min_free_memory
 
     def adjust_ckpt_num_warmup(self):
         rank = dist_env.get_pipeline_model_parallel_rank()
         world_size = dist_env.get_pipeline_model_parallel_world_size()
         ckpt_num = self.pp_checkpoint_num[rank]
-        
-        if self.micro_offset <= self.mirco_batch * 2:
+
+        step_num = self.warmup_iter // 2 + 1
+
+        if self.micro_offset < self.mirco_batch * step_num:
             self.warmup_ckpt_num = ckpt_num
-        elif self.micro_offset < self.mirco_batch * 3:
-            self.warmup_ckpt_num = ckpt_num
-        elif self.micro_offset == self.mirco_batch * 3:
+        elif self.micro_offset == self.mirco_batch * step_num:
             free_memory = self.ave_free_memory()
-            if rank == 0: # for vision
+            if rank == 0:  # for vision
                 if free_memory > 1024 * 20:
                     ckpt_num = self.pp_checkpoint_num[rank] - 10
                 elif free_memory > 1024 * 10:
@@ -391,7 +385,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     ckpt_num = self.pp_checkpoint_num[rank] - 3
                 else:
                     pass
-            if rank == world_size - 1: # for llm
+            if rank == world_size - 1:  # for llm
                 if free_memory > 1024 * 20:
                     ckpt_num = self.pp_checkpoint_num[rank] - 15
                 elif free_memory > 1024 * 10:
@@ -434,7 +428,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 for line in f.readlines():
                     try:
                         temp.append(json.loads(line))
-                    except:
+                    except: # noqa
                         pass
             pp_profile_list.append(temp)
         free_memory_list = []
@@ -443,14 +437,12 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 free_memory_list.append(item['free_memory'])
         min_free_memory = min(free_memory_list)
         self.min_free_memory = min(self.min_free_memory, min_free_memory)
-        no_ckpt_num = self.get_nockpt_num(self.min_free_memory - 3 * 1024)
+        no_ckpt_num = self.get_nockpt_num(self.min_free_memory - self.dc_profile.get('min_memory', 3) * 1024)
         final_ckpt_num = max(self.pp_checkpoint_num[pp_rank] - no_ckpt_num, 0)
         final_ckpt_num = torch.FloatTensor([final_ckpt_num]).cuda()
         dist.all_reduce(final_ckpt_num, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
         dist.all_reduce(final_ckpt_num, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
         final_ckpt_num = int(final_ckpt_num.cpu().item())
-        # if self.pp_profile[-1]['free_memory'] <= 5 * 1024:
-        #     final_ckpt_num += 2
         return final_ckpt_num
 
     def forward(self, forward_input):
@@ -459,11 +451,13 @@ class InternModelPipe(PipelineModule, MegatronModule):
         # will see a different offset.
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         self.micro_offset += 1
-        if self.micro_offset == (self.warmup_iter - 1) * self.mirco_batch:
-            self.save_profile()
-        if self.get_cur_iter() == self.warmup_iter:
-            self.save_profile()
-            self.get_vit_llm_memory_cost()
+        if self.dc_profile is not None:
+            if self.micro_offset == (self.warmup_iter - 1) * self.mirco_batch:
+                self.save_profile()
+            if self.micro_offset == self.warmup_iter * self.mirco_batch:
+                self.save_profile()
+                self.get_vit_llm_memory_cost()
+
         def exec_range_func(start, end):
             ''' Helper function to be used with checkpoint()
             Adapted from torch.utils.checkpoint:checkpoint_sequential()
@@ -526,24 +520,27 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path)
                     self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
-                if self.micro_offset <= self.warmup_iter * self.mirco_batch:
-                    if self.micro_offset > self.mirco_batch * 2:
-                        self.skip_checkpoint_layer_range = self.adjust_ckpt_num_warmup()
+                if self.dc_profile is not None:
+                    if self.micro_offset <= self.warmup_iter * self.mirco_batch:
+                        step_num = self.warmup_iter // 2
+                        if self.micro_offset > self.mirco_batch * step_num:
+                            self.skip_checkpoint_layer_range = self.adjust_ckpt_num_warmup()
+                        else:
+                            self.skip_checkpoint_layer_range = self.pp_checkpoint_num[pp_rank]
                     else:
-                        self.skip_checkpoint_layer_range = self.pp_checkpoint_num[pp_rank]
-                else:
-                    self.skip_checkpoint_layer_range = self.adjust_ckpt_layer_num()
-                print(pp_rank, self.skip_checkpoint_layer_range, self.micro_offset)
+                        self.skip_checkpoint_layer_range = self.adjust_ckpt_layer_num()
+                    print(pp_rank, self.skip_checkpoint_layer_range, self.micro_offset)
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
 
                     funcs = self.forward_funcs[start_idx:end_idx]
-                    # if funcs[0].__class__.__name__ in self.ckpt_module_set:
-                    #     seq_len = self.get_seq_len(x)
-                    #     if self.size_map is not None:
-                    #         self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
-                    # else:
-                    #     self.skip_checkpoint_layer_range = 0
+                    if self.dc_profile is None:
+                        if funcs[0].__class__.__name__ in self.ckpt_module_set:
+                            seq_len = self.get_seq_len(x)
+                            if self.size_map is not None:
+                                self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
+                        else:
+                            self.skip_checkpoint_layer_range = 0
 
                     # Since we either pass tensors or tuples of tensors without unpacking, we
                     # need to be careful not to double-wrap tensors with tuple.
@@ -559,10 +556,11 @@ class InternModelPipe(PipelineModule, MegatronModule):
             if self.profile_path:
                 end_time = get_time()
                 cur_time = end_time - st_time
-                if self.micro_offset <= self.mirco_batch * self.warmup_iter:
-                    torch.cuda.empty_cache()
-                    import time
-                    time.sleep(0.1)
+                if self.dc_profile is not None:
+                    if self.micro_offset <= self.mirco_batch * self.warmup_iter:
+                        torch.cuda.empty_cache()
+                        import time
+                        time.sleep(0.1)
                 memory_info = nvmlDeviceGetMemoryInfo(handle)
                 info = {}
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
@@ -575,7 +573,10 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 info['ckpt_num'] = int(self.skip_checkpoint_layer_range)
                 info['used_memory'] = memory_info.used // (1024**2)
                 info['free_memory'] = memory_info.free // (1024**2)
-                if self.micro_offset > self.mirco_batch:
+                if self.dc_profile is not None:
+                    if self.micro_offset > self.mirco_batch:
+                        self.pp_profile.append(info)
+                else:
                     self.pp_profile.append(info)
         return x
 

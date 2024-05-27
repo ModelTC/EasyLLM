@@ -60,8 +60,7 @@ _MODEL_DEFAULT_CONFIG = {
     "dynamic_checkpoint": None,
     "pp_partition_method": "type:transformer|embedding",
     "profile_path": None,
-    "layer_profile": False,
-    "global_batch_size": 1
+    "layer_profile": False
 }
 
 
@@ -72,7 +71,7 @@ def update_shared_config(cfg):
     keep_list = ["num_layers", "parallel_output", "fp16", "bf16", "fp32_residual_connection",
                  "pretrain_causal_attention", "checkpoint_activations", "checkpoint_num_layers",
                  "dynamic_checkpoint", "pp_partition_method", "sequence_parallel", "num_vit_layers",
-                 "profile_path", "layer_profile", "global_batch_size"]
+                 "profile_path", "layer_profile"]
     model_defuault.update(cfg)
     cfg = model_defuault
     for ck in cfg:
