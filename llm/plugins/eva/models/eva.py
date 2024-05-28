@@ -26,6 +26,7 @@ from .vision_transformer import ParallelVisionTransformerLayerPipe
 from .vision_extract_feat import VisionExtractFeat
 from llm.utils.general.log_helper import default_logger as logger
 import torch.nn as nn
+import torch.distributed as dist
 import os
 try:
     from pynvml import *
@@ -121,9 +122,13 @@ class EVAModelPipe(PipelineModule, MegatronModule):
 
         self.size_map = None
         self.skip_checkpoint_layer_range = -1
+        self.dc_profile = None
         if dynamic_checkpoint is not None:
             if dynamic_checkpoint['enabled']:
                 self.size_map = dynamic_checkpoint['size_map']
+                if 'dc_profile' in dynamic_checkpoint:
+                    if dynamic_checkpoint['dc_profile'].get('enabled', True):
+                        self.dc_profile = dynamic_checkpoint['dc_profile']
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         pp_size = dist_env.get_pipeline_model_parallel_world_size()
         self.checkpoint_list = []
@@ -147,6 +152,45 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                     print(json.dumps(self.parts), file=f, flush=True)
         self.layer_profile_info = []
         self.pp_profile = []
+        if self.dc_profile is not None:
+            self.get_vit_llm_checkpoint_info(num_vit_layers, num_layers)
+            self.layer_profile = False
+
+    def get_vit_llm_checkpoint_info(self, num_vit_layer, num_llm_layer):
+        # (to_bfloat16) + (vit embedding) + num_vit_layer + (mlp) + llm embedding + num_llm_layer + other 4 layer  # noqa
+        self.pp_checkpoint_num = []
+        self.pp_vit_llm_layer_num = []
+        vit_layer_set = set()
+        llm_layer_set = set()
+        # get different stage vit and llm layer num
+        for i in range(num_vit_layer + num_llm_layer + 8):
+            if i < 2:
+                continue
+            elif i < 2 + num_vit_layer:
+                vit_layer_set.add(i)
+            elif i < 4 + num_vit_layer:
+                continue
+            elif i < 4 + num_llm_layer + num_vit_layer:
+                llm_layer_set.add(i)
+            else:
+                continue
+        for i in range(0, len(self.parts) - 1):
+            vit_num = 0
+            llm_num = 0
+            for j in range(self.parts[i], self.parts[i + 1]):
+                if j in vit_layer_set:
+                    vit_num += 1
+                if j in llm_layer_set:
+                    llm_num += 1
+            self.pp_vit_llm_layer_num.append([vit_num, llm_num])
+            self.pp_checkpoint_num.append(vit_num + llm_num)
+
+        self.pp_status = 0
+        self.memory_cost_vit_llm = [0, 0]
+        self.warmup_iter = self.dc_profile.get("warmup_iter", 5)
+        global_batch_size = self.dc_profile['global_batch_size']
+        self.micro_batches = global_batch_size // dist_env.get_data_parallel_world_size()
+        self.min_free_memory = 1000 * 1024
 
     def _is_checkpointable(self, funcs):
         # return False
@@ -186,13 +230,16 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         return start_idx + self.parts[pp_rank]
 
     def save_profile(self):
-        for item in self.layer_profile_info:
-            dist_save_obj_to_json(item, 'layer_time', self.profile_path)
-        pp_rank = dist_env.get_pipeline_model_parallel_rank()
-        for info in self.pp_profile:
-            import json
-            with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
-                print(json.dumps(info), file=f, flush=True)
+        if self.profile_path is not None:
+            if self.layer_profile:
+                for item in self.layer_profile_info:
+                    dist_save_obj_to_json(item, 'layer_time', self.profile_path)
+            pp_rank = dist_env.get_pipeline_model_parallel_rank()
+            if self.dc_profile is None:
+                for info in self.pp_profile:
+                    import json
+                    with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
+                        print(json.dumps(info), file=f, flush=True)
 
     def get_seq_len(self, forward_input):
         # first stage
@@ -223,39 +270,203 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             else:
                 seq_len = forward_input[0].shape[0] * forward_input[0].shape[1]
 
-        """
-        if isinstance(forward_input, tuple):
-            if len(forward_input) == 5:
-                seq_len = 1025 * forward_input[-1].shape[0]
-            elif len(forward_input) == 4:
-                if len(forward_input[0].shape) == 4:
-                    seq_len = forward_input[0].shape[1] * forward_input[0].shape[2]
-                else:
-                    shape = forward_input[0].shape
-                    if len(shape) <= 1:
-                        seq_len = 1
-                    else:
-                        seq_len = shape[0] * shape[1]
-            else:
-                forward_input = forward_input[0]
-                if self.sequence_parallel:
-                    seq_len = forward_input.shape[0] * forward_input.shape[1] * dist_env.get_tensor_model_parallel_world_size()
-                else:
-                    seq_len = forward_input.shape[0] * forward_input.shape[1]
-        else:
-            if self.sequence_parallel:
-                seq_len = forward_input.shape[0] * forward_input.shape[1] * dist_env.get_tensor_model_parallel_world_size()
-            else:
-                seq_len = forward_input.shape[0] * forward_input.shape[1]
-        """
-        # print("seq_len:", seq_len)
         return seq_len
+
+    def get_vit_llm_nockpt_num(self, ckpt_num, pp_rank=0):
+        vit_nockpt_num = 0
+        llm_nockpt_num = 0
+        vit_num, llm_num = self.pp_vit_llm_layer_num[pp_rank]
+        if pp_rank == 0:
+            if ckpt_num >= vit_num:
+                llm_nockpt_num = max(0, vit_num + llm_num - ckpt_num)
+            else:
+                llm_nockpt_num = llm_num
+                vit_nockpt_num = max(0, vit_num - ckpt_num)
+        if pp_rank == - 1:
+            if ckpt_num <= vit_num:
+                llm_nockpt_num = llm_num
+                vit_nockpt_num = max(0, vit_num - ckpt_num)
+            else:
+                llm_nockpt_num = max(0, vit_num + llm_num - ckpt_num)
+        return vit_nockpt_num, llm_nockpt_num
+
+    def get_vit_llm_memory_cost(self):
+        tp_rank = dist_env.get_tensor_model_parallel_rank()
+        dp_rank = dist_env.get_data_parallel_rank()
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
+        world_size = dist_env.get_pipeline_model_parallel_world_size()
+        pp_profile_list = []
+        import json
+        for rank in [0, world_size - 1]:
+            with open(os.path.join(self.profile_path, f"pp_stage_{rank}.txt")) as f:
+                temp = []
+                for line in f.readlines():
+                    try:
+                        temp.append(json.loads(line))
+                    except: # noqa
+                        pass
+            pp_profile_list.append(temp)
+
+        cost_dict1 = {}
+        for item in pp_profile_list[0]:
+            if item['ckpt_num'] not in cost_dict1:
+                cost_dict1[item['ckpt_num']] = []
+            if item['tp'] == tp_rank and item['dp'] == dp_rank:
+                cost_dict1[item['ckpt_num']].append(item['free_memory'])
+
+        keys = sorted(list(cost_dict1.keys()))
+        cost_memory1 = float(cost_dict1[keys[-1]][-1] - cost_dict1[keys[0]][-1])
+
+        vit_nockpt_num1, llm_nockpt_num1 = self.get_vit_llm_nockpt_num(keys[0], 0)
+
+        cost_dict2 = {}
+        for item in pp_profile_list[-1]:
+            if item['ckpt_num'] not in cost_dict2:
+                cost_dict2[item['ckpt_num']] = []
+            if item['tp'] == tp_rank and item['dp'] == dp_rank:
+                cost_dict2[item['ckpt_num']].append(item['free_memory'])
+
+        keys = sorted(list(cost_dict2.keys()))
+        cost_memory2 = float(cost_dict2[keys[-1]][-1] - cost_dict2[keys[0]][-1])
+        vit_nockpt_num2, llm_nockpt_num2 = self.get_vit_llm_nockpt_num(keys[0], -1)
+
+        cost_memory1 = torch.FloatTensor([cost_memory1]).cuda()
+        dist.all_reduce(cost_memory1, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
+        dist.all_reduce(cost_memory1, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
+        cost_memory1 = max(int(cost_memory1.cpu().item()), 10)
+
+        cost_memory2 = torch.FloatTensor([cost_memory2]).cuda()
+        dist.all_reduce(cost_memory2, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
+        dist.all_reduce(cost_memory2, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
+        cost_memory2 = max(int(cost_memory2.cpu().item()), 10)
+
+        from sympy import Symbol, solve
+        x = Symbol('x')
+        y = Symbol('y')
+
+        if vit_nockpt_num2 == 0 and llm_nockpt_num2 == 0:
+            cost_memory2 = 0
+
+        if vit_nockpt_num1 == 0 and llm_nockpt_num1 == 0:
+            cost_memory1 = 0
+        
+        print(pp_rank, "cost memory info", cost_memory1, cost_memory2, vit_nockpt_num1, llm_nockpt_num1, vit_nockpt_num2, llm_nockpt_num2)
+        result = solve([vit_nockpt_num1 * x + llm_nockpt_num1 * y - cost_memory1, vit_nockpt_num2 * x + llm_nockpt_num2 * y - cost_memory2], [x, y])
+        vit_cost = self.dc_profile.get('vit_memory_estimate', 2) * 1024
+        llm_cost = self.dc_profile.get('llm_memory_estimate', 1) * 1024
+        if x in result:
+            vit_cost = float(result[x])
+        if y in result:
+            llm_cost = float(result[y])
+        self.memory_cost_vit_llm = [vit_cost, llm_cost]
+        if os.path.exists(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")):
+            with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")) as f:
+                self.memory_cost_vit_llm = json.loads(f.readlines()[0])
+        else:
+            with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt"), "a") as f:
+                print(json.dumps(self.memory_cost_vit_llm), file=f, flush=True)
+        print(pp_rank, "vit llm memory cost", self.memory_cost_vit_llm)
+
+
+    def ave_free_memory(self):
+        free_memory_list = []
+        for item in self.pp_profile:
+            free_memory_list.append(item['free_memory'])
+        free_memory = min(free_memory_list)
+
+        gather_dp = [None for _ in range(dist_env.get_data_parallel_world_size())]
+        dist.all_gather_object(gather_dp, free_memory, group=dist_env.get_data_parallel_group())
+
+        gather_tp = [None for _ in range(dist_env.get_tensor_model_parallel_world_size())]
+        dist.all_gather_object(gather_tp, gather_dp, group=dist_env.get_tensor_model_parallel_group())
+
+        min_free_memory = 1024 * 1000
+        for i in gather_tp:
+            min_free_memory = min(min(i), min_free_memory)
+
+        return min_free_memory
+
+    def adjust_ckpt_num_warmup(self):
+        rank = dist_env.get_pipeline_model_parallel_rank()
+        world_size = dist_env.get_pipeline_model_parallel_world_size()
+        ckpt_num = self.pp_checkpoint_num[rank]
+
+        step_num = self.warmup_iter // 2 + 1
+
+        if self.micro_offset < self.micro_batches * step_num:
+            self.warmup_ckpt_num = ckpt_num
+        elif self.micro_offset == self.micro_batches * step_num:
+            vit_memory_estimate = self.dc_profile.get('vit_memory_estimate', 2)
+            llm_memory_estimate = self.dc_profile.get('llm_memory_estimate', 1)
+            free_memory = max(self.ave_free_memory() - self.dc_profile['min_memory'] * 1024, 0)
+            if rank == 0:  # for vision
+                ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * vit_memory_estimate)
+            if rank == world_size - 1:  # for llm
+                ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * llm_memory_estimate)
+            self.warmup_ckpt_num = ckpt_num
+        return max(self.warmup_ckpt_num, 1)
+    
+    def get_nockpt_num(self, free_memory):
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
+        vit_num, llm_num = self.pp_vit_llm_layer_num[pp_rank]
+        if vit_num == 0:
+            return (free_memory // self.memory_cost_vit_llm[1] - 1)
+        if llm_num == 0:
+            return (free_memory // self.memory_cost_vit_llm[0] - 1)
+        if llm_num * self.memory_cost_vit_llm[1] > free_memory:
+            return (free_memory // self.memory_cost_vit_llm[1] - 1)
+        else:
+            temp = free_memory - llm_num * self.memory_cost_vit_llm[1]
+            output = temp // self.memory_cost_vit_llm[0] - 1 + llm_num
+            return output
+
+    def adjust_ckpt_layer_num(self):
+        '''
+        adjust ckpt layer from last stage to first stage
+        '''
+        # all_pp_status = self.gather_all_status()
+
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
+        world_size = dist_env.get_pipeline_model_parallel_world_size()
+        predefine_memory = self.dc_profile.get('min_memory', 3) * 1024
+        pp_profile_list = []
+        import json
+        for rank in range(world_size):
+            with open(os.path.join(self.profile_path, f"pp_stage_{rank}.txt")) as f:
+                temp = []
+                for line in f.readlines():
+                    try:
+                        temp.append(json.loads(line))
+                    except: # noqa
+                        pass
+            pp_profile_list.append(temp)
+        free_memory_list = []
+        for item in pp_profile_list[pp_rank]:
+            if item['ckpt_num'] == self.pp_checkpoint_num[pp_rank]:
+                free_memory_list.append(item['free_memory'])
+        min_free_memory = min(free_memory_list)
+
+        self.min_free_memory = min(self.min_free_memory, min_free_memory)
+        if self.min_free_memory < predefine_memory:
+            no_ckpt_num = 0
+        else:
+            no_ckpt_num = max(self.get_nockpt_num(self.min_free_memory - predefine_memory), 0)
+        final_ckpt_num = max(self.pp_checkpoint_num[pp_rank] - no_ckpt_num, 0)
+        final_ckpt_num = torch.FloatTensor([final_ckpt_num]).cuda()
+        dist.all_reduce(final_ckpt_num, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
+        dist.all_reduce(final_ckpt_num, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
+        final_ckpt_num = int(final_ckpt_num.cpu().item())
+        return final_ckpt_num
 
     def forward(self, forward_input):
         # We need to offset the seed by the microbatch ID. Save it in a local var to
         # ensure it is preserved in the closure. Otherwise checkpointed forward funcs
         # will see a different offset.
+        pp_rank = dist_env.get_pipeline_model_parallel_rank()
         self.micro_offset += 1
+        if self.dc_profile is not None:
+            if self.micro_offset == self.warmup_iter * self.micro_batches:
+                self.get_vit_llm_memory_cost()
 
         def exec_range_func(start, end):
             ''' Helper function to be used with checkpoint()
@@ -320,16 +531,27 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                     # dist_save_obj_to_json({'layer_idx': layer_idx, 'time': stats['elapsed_time']}, 'layer_time', self.profile_path)
                     self.layer_profile_info.append({'layer_idx': layer_idx, 'time': stats['elapsed_time']})
             else:
+                if self.dc_profile is not None:
+                    if self.micro_offset <= self.warmup_iter * self.micro_batches:
+                        step_num = self.warmup_iter // 2
+                        if self.micro_offset > self.micro_batches * step_num:
+                            self.skip_checkpoint_layer_range = self.adjust_ckpt_num_warmup()
+                        else:
+                            self.skip_checkpoint_layer_range = self.pp_checkpoint_num[pp_rank]
+                    else:
+                        self.skip_checkpoint_layer_range = self.adjust_ckpt_layer_num()
+                    print(pp_rank, self.skip_checkpoint_layer_range, self.micro_offset)
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
 
                     funcs = self.forward_funcs[start_idx:end_idx]
-                    if funcs[0].__class__.__name__ in self.ckpt_module_set:
-                        seq_len = self.get_seq_len(x)
-                        if self.size_map is not None:
-                            self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
-                    else:
-                        self.skip_checkpoint_layer_range = 0
+                    if self.dc_profile is None:
+                        if funcs[0].__class__.__name__ in self.ckpt_module_set:
+                            seq_len = self.get_seq_len(x)
+                            if self.size_map is not None:
+                                self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
+                        else:
+                            self.skip_checkpoint_layer_range = 0
                     # Since we either pass tensors or tuples of tensors without unpacking, we
                     # need to be careful not to double-wrap tensors with tuple.
                     if not isinstance(x, tuple):
@@ -345,21 +567,33 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             if self.profile_path:
                 end_time = get_time()
                 cur_time = end_time - st_time
+                if self.dc_profile is not None:
+                    if self.micro_offset <= self.micro_batches * self.warmup_iter:
+                        torch.cuda.empty_cache()
+                        torch.cuda.memory.reset_peak_memory_stats()
+                        import time
+                        time.sleep(0.1)
                 memory_info = nvmlDeviceGetMemoryInfo(handle)
                 info = {}
                 pp_rank = dist_env.get_pipeline_model_parallel_rank()
-                info['time'] = cur_time
-                info['stage'] = pp_rank
+                tp_rank = dist_env.get_tensor_model_parallel_rank()
+                dp_rank = dist_env.get_data_parallel_rank()
+                info['time'] = float(cur_time)
+                info['stage'] = int(pp_rank)
+                info['tp'] = int(tp_rank)
+                info['dp'] = int(dp_rank)
+                info['ckpt_num'] = int(self.skip_checkpoint_layer_range)
                 info['used_memory'] = memory_info.used // (1024**2)
                 info['free_memory'] = memory_info.free // (1024**2)
-                self.pp_profile.append(info)
+                if self.dc_profile is not None:
+                    if self.micro_offset > self.micro_batches:
+                        self.pp_profile.append(info)
+                        import json
+                        with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
+                            print(json.dumps(info), file=f, flush=True)
+                else:
+                    self.pp_profile.append(info)
         return x
-
-    # def forward(self, forward_input):
-    #     seq_len = self.get_seq_len(forward_input)
-    #     if self.size_map is not None:
-    #         self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
-    #     return super().forward(forward_input)
 
     def _set_model_kwargs(self, num_vit_layers, num_layers, checkpoint_activations):
         self.model_kwargs = {"num_vit_layers": num_vit_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
