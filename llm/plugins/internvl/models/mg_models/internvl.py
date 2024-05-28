@@ -503,6 +503,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
                     layer_idx = self.get_layer_idx(start_idx)
+                    if self.size_map is None:
+                        self.skip_checkpoint_layer_range = -1
                     with measure_time(f'pp{pp_rank}_layer{layer_idx}', False) as stats:
                         funcs = self.forward_funcs[start_idx:end_idx]
                         if funcs[0].__class__.__name__ in self.ckpt_module_set:
@@ -537,7 +539,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     print(pp_rank, self.skip_checkpoint_layer_range, self.micro_offset)
                 for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
                     end_idx = min(start_idx + self.activation_checkpoint_interval, num_layers)
-
+                    if self.size_map is None:
+                        self.skip_checkpoint_layer_range = -1
                     funcs = self.forward_funcs[start_idx:end_idx]
                     if self.dc_profile is None:
                         if funcs[0].__class__.__name__ in self.ckpt_module_set:
@@ -546,7 +549,6 @@ class InternModelPipe(PipelineModule, MegatronModule):
                                 self.skip_checkpoint_layer_range = self.get_checkpoint_range(seq_len)
                         else:
                             self.skip_checkpoint_layer_range = 0
-
                     # Since we either pass tensors or tuples of tensors without unpacking, we
                     # need to be careful not to double-wrap tensors with tuple.
                     if not isinstance(x, tuple):
