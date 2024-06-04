@@ -215,11 +215,17 @@ def hf_to_megatron_llama(dt, model, vit_layers=None, pack=False):
             if 'self_attn.k_proj' in key:
                 if pack:
                     continue
-                output_dt[f'module.{layer_id}.self_attn.k_proj.weight'] = dt[key]
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id}.self_attn.k_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id}.self_attn.k_proj.bias'] = dt[key]
             if 'self_attn.v_proj' in key:
                 if pack:
                     continue
-                output_dt[f'module.{layer_id}.self_attn.v_proj.weight'] = dt[key]
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id}.self_attn.v_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id}.self_attn.v_proj.bias'] = dt[key]
             if 'self_attn.o_proj' in key:
                 output_dt[f'module.{layer_id}.self_attn.o_proj.weight'] = dt[key]
             if 'gate_proj' in key:
