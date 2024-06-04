@@ -774,7 +774,7 @@ class LlamavlToolParser(object):
                     # do not support knowledge yet
                     raise NotImplementedError
                 if item['role'] == 'user':
-                    user_info = f"<|start_header_id|>user<|end_header_id|>\n\n{item['content']}<|eot_id|>"
+                    user_info = f"<|start_header_id|>user<|end_header_id|>\n\n{item['content'].strip()}<|eot_id|>"
                     tokenized_user = self.tokenizer(user_info, return_attention_mask=False,
                                                     add_special_tokens=False)['input_ids']
                     tokens.extend(tokenized_user)
@@ -788,7 +788,7 @@ class LlamavlToolParser(object):
                     labels.extend([self.ignore_index] * len(tokens_assistant_start))
                     assis_info = ""
                     if item['content']:
-                        assis_info = item['content']
+                        assis_info = item['content'].strip()
 
                     if 'tool_calls' in item and len(item['tool_calls']) > 0:
                         assis_info += self.action_start

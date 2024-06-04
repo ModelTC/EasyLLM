@@ -173,7 +173,7 @@ def internlm2_to_llama2(dt, model, vit_layers=None, is_pack=True):
     return output_dt
 
 
-def hf_to_megatron_llama(dt, model, vit_layers=None):
+def hf_to_megatron_llama(dt, model, vit_layers=None, pack=False):
     output_dt = {}
     num_layers = model.model_kwargs['num_layers']
     if vit_layers is not None:
@@ -201,11 +201,31 @@ def hf_to_megatron_llama(dt, model, vit_layers=None):
             else:
                 layer_id += 3
             if 'self_attn.q_proj' in key:
-                output_dt[f"module.{layer_id}.self_attn.q_proj.weight"] = dt[key]
+                if pack:
+                    wqkv_val = [dt[key], dt[key.replace("q_proj", "k_proj")], dt[key.replace("q_proj", "v_proj")]]
+                    if 'weight' in key:
+                        output_dt[f"module.{layer_id}.self_attn.wqkv.weight"] = wqkv_val
+                    else:
+                        output_dt[f"module.{layer_id}.self_attn.wqkv.bias"] = wqkv_val
+                else:
+                    if 'weight' in key:
+                        output_dt[f"module.{layer_id}.self_attn.q_proj.weight"] = dt[key]
+                    else:
+                        output_dt[f"module.{layer_id}.self_attn.q_proj.bias"] = dt[key]
             if 'self_attn.k_proj' in key:
-                output_dt[f'module.{layer_id}.self_attn.k_proj.weight'] = dt[key]
+                if pack:
+                    continue
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id}.self_attn.k_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id}.self_attn.k_proj.bias'] = dt[key]
             if 'self_attn.v_proj' in key:
-                output_dt[f'module.{layer_id}.self_attn.v_proj.weight'] = dt[key]
+                if pack:
+                    continue
+                if 'weight' in key:
+                    output_dt[f'module.{layer_id}.self_attn.v_proj.weight'] = dt[key]
+                else:
+                    output_dt[f'module.{layer_id}.self_attn.v_proj.bias'] = dt[key]
             if 'self_attn.o_proj' in key:
                 output_dt[f'module.{layer_id}.self_attn.o_proj.weight'] = dt[key]
             if 'gate_proj' in key:
@@ -531,8 +551,11 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
             dt = internlm2_to_llama2(dt, model, vit_layers, False)
     elif pretrain_type == "qwen":
         dt = qwen_to_llama(dt, model)
-    elif pretrain_type == 'llama':
-        dt = hf_to_megatron_llama(dt, model, vit_layers)
+    elif 'llama' in pretrain_type:
+        assert pretrain_type in ["llama", "llama_pack"]
+        if pretrain_type == "llama_pack":
+            is_pack = True
+        dt = hf_to_megatron_llama(dt, model, vit_layers, pack=is_pack)
     elif pretrain_type == 'vit':
         dt = hf_to_megatron_vit(dt, model, vit_layers)
     elif pretrain_type == 'eva':

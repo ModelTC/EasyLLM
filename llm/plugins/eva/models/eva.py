@@ -684,7 +684,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         specs.append(LayerSpec(EmbeddingPipe, **self.word_embedings_params))
 
         for layer_idx in range((num_vit_layers + 4), (num_vit_layers + 4 + num_layers)):
-            self.transformer_layer_params.update({'qkv_pack': True})
+            # self.transformer_layer_params.update({'qkv_pack': True})
             self.transformer_layer_params.update({'layer_number': layer_idx})
             specs.append(LayerSpec(ParallelTransformerLayerPipe, **self.transformer_layer_params))
 
