@@ -637,7 +637,7 @@ def load_llama_from_hf_format(load_dirs,
         filenames = []
         for item in os.listdir(load_dir):
             bin_file = os.path.join(load_dir, item)
-            if (item.endswith(".bin") and 'pytorch' in item) or item.endswith('safetensors'):
+            if (item.endswith(".bin") and 'pytorch' in item) or item.endswith('safetensors') or item.endswith("pth"):
                 if os.path.isfile(bin_file):
                     filenames.append(bin_file)
         if len(filenames) == 0:
