@@ -370,7 +370,7 @@ def hf_to_megatron_internvl(dt, model, is_pack=False):
     return output_dt
 
 
-def hf_to_megatron_vit(dt, model, vit_layers):
+def hf_to_megatron_vit(dt, model, vit_layers, load_mlp1=True):
     output_dt = {}
     llm_num_layers = model.model_kwargs['num_layers']  # noqa
     # vit_num_layers = model.model_kwargs['num_husky_layers']
@@ -424,22 +424,47 @@ def hf_to_megatron_vit(dt, model, vit_layers):
                 output_dt[f'module.{layer_id}.attn.k_norm.weight'] = dt[key]
             else:
                 logger.info(f"unuse keys {key}")
-        elif key.startswith('mlp1'):
-            layer_id = vit_num_layers + 2
-            if 'mlp1.0.weight' in key:
-                output_dt[f'module.{layer_id}.mlp1_norm.weight'] = dt[key]
-            elif 'mlp1.0.bias' in key:
-                output_dt[f'module.{layer_id}.mlp1_norm.bias'] = dt[key]
-            elif 'mlp1.1.weight' in key:
-                output_dt[f'module.{layer_id}.mlp1_fc1.weight'] = dt[key]
-            elif 'mlp1.1.bias' in key:
-                output_dt[f'module.{layer_id}.mlp1_fc1.bias'] = dt[key]
-            elif 'mlp1.3.weight' in key:
-                output_dt[f'module.{layer_id}.mlp1_fc2.weight'] = dt[key]
-            elif 'mlp1.3.bias' in key:
-                output_dt[f'module.{layer_id}.mlp1_fc2.bias'] = dt[key]
-            else:
-                logger.info(f"unuse keys {key}")
+        elif load_mlp1:
+            if key.startswith('mlp1'):
+                layer_id = vit_num_layers + 2
+                if 'mlp1.0.weight' in key:
+                    output_dt[f'module.{layer_id}.mlp1_norm.weight'] = dt[key]
+                elif 'mlp1.0.bias' in key:
+                    output_dt[f'module.{layer_id}.mlp1_norm.bias'] = dt[key]
+                elif 'mlp1.1.weight' in key:
+                    output_dt[f'module.{layer_id}.mlp1_fc1.weight'] = dt[key]
+                elif 'mlp1.1.bias' in key:
+                    output_dt[f'module.{layer_id}.mlp1_fc1.bias'] = dt[key]
+                elif 'mlp1.3.weight' in key:
+                    output_dt[f'module.{layer_id}.mlp1_fc2.weight'] = dt[key]
+                elif 'mlp1.3.bias' in key:
+                    output_dt[f'module.{layer_id}.mlp1_fc2.bias'] = dt[key]
+                else:
+                    logger.info(f"unuse keys {key}")
+        else:
+            logger.info(f"unuse keys {key}")
+    return output_dt
+
+
+def hf_to_megatron_mlp1(dt, model, vit_layers):
+    output_dt = {}
+    llm_num_layers = model.model_kwargs['num_layers']  # noqa
+    # vit_num_layers = model.model_kwargs['num_husky_layers']
+    vit_num_layers = vit_layers
+    layer_id = vit_num_layers + 2
+    for key in dt.keys():
+        if '0.weight' in key:
+            output_dt[f'module.{layer_id}.mlp1_norm.weight'] = dt[key]
+        elif '0.bias' in key:
+            output_dt[f'module.{layer_id}.mlp1_norm.bias'] = dt[key]
+        elif '1.weight' in key:
+            output_dt[f'module.{layer_id}.mlp1_fc1.weight'] = dt[key]
+        elif '1.bias' in key:
+            output_dt[f'module.{layer_id}.mlp1_fc1.bias'] = dt[key]
+        elif '3.weight' in key:
+            output_dt[f'module.{layer_id}.mlp1_fc2.weight'] = dt[key]
+        elif '3.bias' in key:
+            output_dt[f'module.{layer_id}.mlp1_fc2.bias'] = dt[key]
         else:
             logger.info(f"unuse keys {key}")
     return output_dt
@@ -457,7 +482,7 @@ def get_start_end(size, tp_world_size, tp_rank):
     return res[tp_rank]
 
 
-def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set, vit_layers=None):
+def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set, vit_layers=None, load_mlp1=True):
     logger.info(f"loadding {filename}")
     if "s3://" in filename:
         dt = PetrelHelper.load(filename, map_location='cpu')
@@ -481,7 +506,9 @@ def load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pr
             is_pack = True
         dt = hf_to_megatron_llama(dt, model, vit_layers, pack=is_pack)
     elif pretrain_type == 'vit':
-        dt = hf_to_megatron_vit(dt, model, vit_layers)
+        dt = hf_to_megatron_vit(dt, model, vit_layers, load_mlp1=load_mlp1)
+    elif pretrain_type == "mlp_proj":
+        dt = hf_to_megatron_mlp1(dt, model, vit_layers)
     elif "internvl" in pretrain_type:
         if 'pack' in pretrain_type:
             is_pack = True
@@ -600,6 +627,7 @@ def load_llama_from_hf_format(load_dirs,
         pretrain_type = [pretrain_type]
 
     llm_pretrain_type = pretrain_type
+    load_mlp1 = "mlp_proj" not in llm_pretrain_type
     for idx in range(len(load_dirs)):
         load_dir = load_dirs[idx]
         pretrain_type = llm_pretrain_type[idx]
@@ -628,11 +656,11 @@ def load_llama_from_hf_format(load_dirs,
         tp_world_size = dist_env.get_tensor_model_parallel_world_size()
         if worker == 1:
             for filename in filenames[:]:
-                load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set, vit_layers=vit_layers)
+                load_func(filename, tp_rank, tp_world_size, model, num_layers, lora_mode, pretrain_type, init_set, vit_layers=vit_layers, load_mlp1=load_mlp1)
         else:
             from functools import partial
             from multiprocessing.pool import ThreadPool as Pool
-            partial_func = partial(load_func, tp_rank=tp_rank, tp_world_size=tp_world_size, model=model, num_layers=num_layers, lora_mode=lora_mode, pretrain_type=pretrain_type, init_set=init_set, vit_layers=vit_layers)  # noqa
+            partial_func = partial(load_func, tp_rank=tp_rank, tp_world_size=tp_world_size, model=model, num_layers=num_layers, lora_mode=lora_mode, pretrain_type=pretrain_type, init_set=init_set, vit_layers=vit_layers, load_mlp1=load_mlp1)  # noqa
             with Pool(worker) as p:
                 _ = p.map(partial_func, filenames)
     mega_model_keys = set(model.state_dict().keys())
