@@ -17,12 +17,14 @@ class CrossEntropy(object):
                  is_prefix=True,
                  cut_size=None,
                  dp_reduce=False,
+                 dynamic_bs_loss=False,
                  **kwargs):
         self.loss_on_targets_only = loss_on_targets_only
         self.reweight_loss_based_on_position_frequency = reweight_loss_based_on_position_frequency
         self.is_prefix = is_prefix
         self.cut_size = cut_size
         self.dp_reduce = dp_reduce
+        self.dynamic_bs_loss = dynamic_bs_loss
 
     def get_expected_number_of_tokens(self, labels, loss_mask):
         ignore_mask = (labels == IGNORE_INDEX)
@@ -34,15 +36,50 @@ class CrossEntropy(object):
         return max(expected_number_of_tokens, 1), loss_mask
 
     def __call__(self, inputs, labels):
-        output, loss_mask, labels = inputs[0], inputs[1], inputs[2]
-        expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
-        if ((labels == -100).sum() == labels.shape[1]):
-            bs, d = labels.shape
-            ignore_mask = (labels != -100).view(-1)
-            loss = output.view(bs * d, -1)[ignore_mask].sum()
+
+        if len(labels) == 3:
+            labels, loss_mask, cu_seqlens = labels[0], labels[1], labels[2]
         else:
-            losses = vocab_parallel_cross_entropy(output.contiguous().float(), labels, self.cut_size)
-            loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
+            labels, loss_mask = labels[0], labels[1]
+            cu_seqlens = None
+        if isinstance(inputs, list):
+            output, loss_mask, labels, cu_seqlens = inputs[0], inputs[1], inputs[2], inputs[3]
+
+        if self.dynamic_bs_loss and cu_seqlens is not None:
+            if ((labels == -100).sum() == labels.shape[1]):
+                bs, d = labels.shape
+                ignore_mask = (labels != -100).view(-1)
+                loss = output.view(bs * d, -1)[ignore_mask].sum()
+            else:
+                losses = vocab_parallel_cross_entropy(output.contiguous().float(),
+                                                    labels, self.cut_size)
+                bs = labels.shape[0]
+                loss = []
+                for b in range(bs):
+                    single_cu_seqlen = cu_seqlens[b]
+                    single_losses = losses[b]
+                    single_labels = labels[b]
+                    single_loss_mask = loss_mask[b]
+                    b_loss = 0.
+                    for idx in range(1, len(single_cu_seqlen)):
+                        start, end = single_cu_seqlen[idx-1], single_cu_seqlen[idx]
+                        single_losses_ = single_losses[start:end]
+                        single_labels_ = single_labels[start:end].unsqueeze(0)
+                        single_loss_mask_ = single_loss_mask[start:end].unsqueeze(0)
+                        expected_number_of_tokens, single_loss_mask_ = self.get_expected_number_of_tokens(single_labels_, single_loss_mask_)
+                        b_loss += torch.sum(single_losses_.view(-1) * single_loss_mask_) / expected_number_of_tokens
+                    b_loss /= (len(single_cu_seqlen) - 1)
+                    loss.append(b_loss)
+                loss = sum(loss) / len(loss)
+        else:
+            expected_number_of_tokens, loss_mask = self.get_expected_number_of_tokens(labels, loss_mask)
+            if ((labels == -100).sum() == labels.shape[1]):
+                bs, d = labels.shape
+                ignore_mask = (labels != -100).view(-1)
+                loss = output.view(bs * d, -1)[ignore_mask].sum()
+            else:
+                losses = vocab_parallel_cross_entropy(output.contiguous().float(), labels, self.cut_size)
+                loss = torch.sum(losses.view(-1) * loss_mask) / expected_number_of_tokens
         return loss
 
 
