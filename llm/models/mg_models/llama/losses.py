@@ -44,6 +44,8 @@ class CrossEntropy(object):
             cu_seqlens = None
         if isinstance(inputs, list):
             output, loss_mask, labels, cu_seqlens = inputs[0], inputs[1], inputs[2], inputs[3]
+        else:
+            output = inputs
 
         if self.dynamic_bs_loss and cu_seqlens is not None:
             if ((labels == -100).sum() == labels.shape[1]):
