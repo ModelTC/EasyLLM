@@ -14,7 +14,7 @@ IGNORE_INDEX = -100
 @BATCH_COLLECTOR_REGISTRY.register('internvl')
 class InternvlCollector(BatchAlignCollector):
     def __init__(self, tokenizer, alignment=1, offset_label=True):
-        super().__init__(tokenizer, alignment=alignment)
+        super().__init__(tokenizer, alignment=alignment, offset_label=offset_label)
 
     def __call__(self, instances, pad_id=0):
         first = instances[0]
@@ -74,4 +74,5 @@ class InternvlCollector(BatchAlignCollector):
                     batch[k] = torch.concat(np.stack([f[k] for f in instances]))
                 else:
                     batch[k] = torch.concat([f[k] for f in instances])
+
         return batch
