@@ -18,6 +18,7 @@ class CrossEntropy(object):
                  cut_size=None,
                  dp_reduce=False,
                  dynamic_bs_loss=False,
+                 dynamic_mean=True,
                  **kwargs):
         self.loss_on_targets_only = loss_on_targets_only
         self.reweight_loss_based_on_position_frequency = reweight_loss_based_on_position_frequency
@@ -25,6 +26,7 @@ class CrossEntropy(object):
         self.cut_size = cut_size
         self.dp_reduce = dp_reduce
         self.dynamic_bs_loss = dynamic_bs_loss
+        self.dynamic_mean = dynamic_mean
 
     def get_expected_number_of_tokens(self, labels, loss_mask):
         ignore_mask = (labels == IGNORE_INDEX)
@@ -42,7 +44,7 @@ class CrossEntropy(object):
         else:
             labels, loss_mask = labels[0], labels[1]
             cu_seqlens = None
-        if isinstance(inputs, list):
+        if isinstance(inputs, tuple):
             output, loss_mask, labels, cu_seqlens = inputs[0], inputs[1], inputs[2], inputs[3]
         else:
             output = inputs
@@ -70,7 +72,8 @@ class CrossEntropy(object):
                         single_loss_mask_ = single_loss_mask[start:end].unsqueeze(0)
                         expected_number_of_tokens, single_loss_mask_ = self.get_expected_number_of_tokens(single_labels_, single_loss_mask_)
                         b_loss += torch.sum(single_losses_.view(-1) * single_loss_mask_) / expected_number_of_tokens
-                    b_loss /= (len(single_cu_seqlen) - 1)
+                    if self.dynamic_mean:
+                        b_loss /= (len(single_cu_seqlen) - 1)
                     loss.append(b_loss)
                 loss = sum(loss) / len(loss)
         else:
