@@ -174,6 +174,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 llm_layer_set.add(i)
             else:
                 continue
+        self.pure_vit_stage_id = 0
+        self.pure_llm_stage_id = dist_env.get_pipeline_model_parallel_world_size() - 1
         for i in range(0, len(self.parts) - 1):
             vit_num = 0
             llm_num = 0
@@ -184,6 +186,11 @@ class InternModelPipe(PipelineModule, MegatronModule):
                     llm_num += 1
             self.pp_vit_llm_layer_num.append([vit_num, llm_num])
             self.pp_checkpoint_num.append(vit_num + llm_num)
+
+        for idx, vit_llm_layer_num in enumerate(self.pp_vit_llm_layer_num):
+            if vit_llm_layer_num[0] == 0:
+                self.pure_llm_stage_id = idx
+                break
 
         self.pp_status = 0
         self.memory_cost_vit_llm = [0, 0]
@@ -297,7 +304,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         world_size = dist_env.get_pipeline_model_parallel_world_size()
         pp_profile_list = []
         import json
-        for rank in [0, world_size - 1]:
+        for rank in [self.pure_vit_stage_id, self.pure_llm_stage_id]:
             with open(os.path.join(self.profile_path, f"pp_stage_{rank}.txt")) as f:
                 temp = []
                 for line in f.readlines():
@@ -391,9 +398,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
             vit_memory_estimate = self.dc_profile.get('vit_memory_estimate', 2)
             llm_memory_estimate = self.dc_profile.get('llm_memory_estimate', 1)
             free_memory = self.ave_free_memory() - self.dc_profile['min_memory'] * 1024
-            if rank == 0:  # for vision
+            if rank == self.pure_vit_stage_id:  # for vision
                 ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * vit_memory_estimate)
-            if rank == world_size - 1:  # for llm
+            if rank == self.pure_llm_stage_id:  # for llm
                 ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * llm_memory_estimate)
             self.warmup_ckpt_num = ckpt_num
         return max(self.warmup_ckpt_num, 1)
@@ -437,7 +444,6 @@ class InternModelPipe(PipelineModule, MegatronModule):
             if item['ckpt_num'] == self.pp_checkpoint_num[pp_rank]:
                 free_memory_list.append(item['free_memory'])
         min_free_memory = min(free_memory_list)
-
         self.min_free_memory = min(self.min_free_memory, min_free_memory)
         if self.min_free_memory < predefine_memory:
             no_ckpt_num = 0
@@ -445,9 +451,17 @@ class InternModelPipe(PipelineModule, MegatronModule):
             no_ckpt_num = max(self.get_nockpt_num(self.min_free_memory - predefine_memory), 0)
         final_ckpt_num = max(self.pp_checkpoint_num[pp_rank] - no_ckpt_num, 0)
         final_ckpt_num = torch.FloatTensor([final_ckpt_num]).cuda()
+        # if current free memory < prefine_memory, we add final_ckpt_num
+        if self.pp_profile[-1]['free_memory'] < predefine_memory:
+            if pp_rank < self.pure_llm_stage_id:
+                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[0] + 1
+            else:
+                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[1] + 1      
+            final_ckpt_num += add_num
         dist.all_reduce(final_ckpt_num, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
         dist.all_reduce(final_ckpt_num, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
         final_ckpt_num = int(final_ckpt_num.cpu().item())
+
         return final_ckpt_num
 
     def forward(self, forward_input):
