@@ -608,6 +608,16 @@ class InternModelPipe(PipelineModule, MegatronModule):
     def _set_model_kwargs(self, num_vit_layers, num_layers, checkpoint_activations):
         self.model_kwargs = {"num_vit_layers": num_vit_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
 
+    def get_parts_parameters(self, param_counts):
+        parts_parameters = []
+        for i in range(len(self.parts) - 1):
+            p_sum = 0
+            for j in range(self.parts[i], self.parts[i + 1]):
+                p_sum += param_counts[j]
+            parts_parameters.append(p_sum / (1024.**3))
+        return parts_parameters
+
+
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
         stage_id = self._topo.get_coord(self.global_rank).pipe
@@ -616,18 +626,18 @@ class InternModelPipe(PipelineModule, MegatronModule):
             logger.info(f'Partitioning pipeline stages with method {method}')
 
         method = method.lower()
-
+        param_counts = self._count_layer_params()
         # Each stage gets a simple uniform number of layers.
         if method == 'uniform':
             num_layers = len(self._layer_specs)
             self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
         elif method == 'parameters':
-            param_counts = self._count_layer_params()
             self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
             if self.profile_path is not None:
                 from .utils import reduce_list_data
                 self.parts = reduce_list_data(self.parts)
                 dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
+            
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in self.parts]
@@ -641,7 +651,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
         else:
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
-
+        parts_parameters = self.get_parts_parameters(param_counts)
+        print("stage parameters", parts_parameters)
         # Print some information on the partitioning.
         if self.global_rank == 0:
             for stage in range(num_stages):

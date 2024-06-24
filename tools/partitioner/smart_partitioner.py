@@ -238,11 +238,11 @@ if __name__ == '__main__':
                                 vit_hidden_size=vit_hidden_size,
                                 llm_bs=llm_bs,
                                 llm_length=llm_length,
+                                num_layer=vit_layer_num + llm_layer_num + 8,
                                 llm_hidden_size=llm_hidden_size,
                                 vit_layer_num=vit_layer_num,
                                 llm_layer_num=llm_layer_num,
                                 vit_num_token=vit_num_token)
-
     # 读取存下来的forward time
     stats = load_stats(args.input_path, NUM_LAYER, NUM_PP, NUM_TP)
     avg_forward_time = get_avg_stats(stats, warmup_iter, verbose=False)
