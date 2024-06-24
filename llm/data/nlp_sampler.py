@@ -315,13 +315,6 @@ class MegatronLengthGroupSampler:
             'data_parallel_rank should be smaller than data size: {}, ' \
             '{}'.format(self.data_parallel_rank, data_parallel_size)
 
-        if isinstance(lengths, str):
-            with open(lengths, "r") as f:
-                lengths = json.load(f)["lengths"]
-
-        if isinstance(lengths, torch.Tensor):
-            lengths = lengths.tolist()
-
         self.lengths = lengths
         self.num_samples = math.ceil(len(self.lengths) / (data_parallel_size * self.micro_batch_size))
         self.total_size = self.num_samples * data_parallel_size * self.micro_batch_size

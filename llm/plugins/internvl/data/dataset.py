@@ -73,6 +73,7 @@ class InternvlToolsDataset(Dataset):
 
     def load_warp_meta(self, json_files):
         metas = []
+        lengths = []
         for wrap_file in json_files:
             data_info = PetrelHelper.load_json(wrap_file)
             for data_name in data_info.keys():
@@ -80,6 +81,13 @@ class InternvlToolsDataset(Dataset):
                 img_dir = data_info[data_name]["root"]
                 data_file = data_info[data_name]["annotation"]
                 data_augment = data_info[data_name]["data_augment"]
+                if "token_lengths" in data_info[data_name]:
+                    token_length_path = data_info[data_name]['token_lengths']
+                    with open(token_length_path, "r") as f:
+                        token_length = json.load(f)
+                    for item in token_length:
+                        lengths.append(item['token_num'])
+
                 for _ in range(repeat_time):
                     with PetrelHelper.open(data_file) as f:
                         for i, line in enumerate(f):
@@ -90,6 +98,7 @@ class InternvlToolsDataset(Dataset):
                             metas.append(meta)
                             if ((i + 1) % 1000 == 0):
                                 logger.info('{} items of data have been loaded'.format(i + 1))
+        self.lengths = lengths
         return metas
 
     def load_metas(self, json_files, json_type=['all']):
