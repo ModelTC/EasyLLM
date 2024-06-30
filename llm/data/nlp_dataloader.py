@@ -314,7 +314,7 @@ def build_data_loader(cfg_data, tokenizer):
     cfg_data['batch_sampler']['kwargs'].update({'total_samples': len(dataset),
                                                 'data_parallel_rank': dist_env.get_data_parallel_rank(),
                                                 'data_parallel_size': dist_env.get_data_parallel_world_size()})
-    if cfg_data['batch_sampler']['type'] == "megatron_length_group":
+    if cfg_data['batch_sampler']['type'] == "megatron_length_group" or cfg_data['batch_sampler']['type'] == "megatron_nopad":
         if hasattr(dataset, 'lengths'):
             cfg_data['batch_sampler']['kwargs']['lengths'] = dataset.lengths
     batch_sampler = build_batch_sampler(cfg_data['batch_sampler'])

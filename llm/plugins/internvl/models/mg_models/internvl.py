@@ -633,11 +633,12 @@ class InternModelPipe(PipelineModule, MegatronModule):
             self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
         elif method == 'parameters':
             self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
+            from .utils import reduce_list_data
+            self.parts = reduce_list_data(self.parts)
             if self.profile_path is not None:
                 from .utils import reduce_list_data
                 self.parts = reduce_list_data(self.parts)
                 dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
-            
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in self.parts]

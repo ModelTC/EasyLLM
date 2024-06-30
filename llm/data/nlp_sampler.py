@@ -2,6 +2,7 @@ import torch
 from torch.utils.data.sampler import Sampler, BatchSampler
 import math
 import json
+import numpy as np
 
 from llm.utils.general.registry_factory import BATCH_SAMPLER_REGISTRY, SAMPLER_REGISTRY
 from .data_utils import get_length_grouped_indices
@@ -406,3 +407,83 @@ def build_batch_sampler(cfg_batch_sample):
             batch_sampler = InfiniteBatchSampler(batch_sampler)
             return batch_sampler
     return BATCH_SAMPLER_REGISTRY.build(cfg_batch_sample)
+
+@BATCH_SAMPLER_REGISTRY.register('megatron_nopad')
+class NoPadLengthGroupSampler:
+    def __init__(self, total_samples, consumed_samples, micro_batch_size,
+                 data_parallel_rank, data_parallel_size, lengths=None, seed=233):
+        # Keep a copy of input params for later use.
+        self.total_samples = total_samples
+        self.consumed_samples = consumed_samples
+        self.micro_batch_size = micro_batch_size
+        self.data_parallel_rank = data_parallel_rank
+        self.data_parallel_size = data_parallel_size
+        self.micro_batch_times_data_parallel_size = \
+            self.micro_batch_size * data_parallel_size
+        self.last_batch_size = \
+            self.total_samples % self.micro_batch_times_data_parallel_size
+
+        # Sanity checks.
+        assert self.total_samples > 0, \
+            'no sample to consume: {}'.format(self.total_samples)
+        assert self.micro_batch_size > 0
+        assert data_parallel_size > 0
+        assert self.data_parallel_rank < data_parallel_size, \
+            'data_parallel_rank should be smaller than data size: {}, ' \
+            '{}'.format(self.data_parallel_rank, data_parallel_size)
+
+        self.lengths = lengths
+        self.num_samples = math.ceil(len(self.lengths) / (data_parallel_size * self.micro_batch_size))
+        self.total_size = self.num_samples * data_parallel_size * self.micro_batch_size
+        self.seed = seed
+        self.buffer = None
+
+    def get_length_grouped_indices(self, lengths):
+        lengths = np.array(lengths)
+        indices = np.argsort(lengths).tolist()
+        nopad_group = []
+        for j in range(len(indices) // self.micro_batch_size):
+            temp = []
+            for i in range(self.micro_batch_size):
+                temp.append(indices[j * self.micro_batch_size + i])
+            nopad_group.append(temp)
+        rng = np.random.RandomState(1000)
+        index = list(range(len(nopad_group)))
+        rng.shuffle(index)
+        new_indices = []
+        for item in index:
+            for temp in nopad_group[item]:
+                new_indices.append(temp)
+        return new_indices
+    
+
+    def __len__(self):
+        return self.total_samples
+
+    def __iter__(self):
+        if self.buffer is None:
+            g = torch.Generator()
+            g.manual_seed(self.seed)
+            indices = self.get_length_grouped_indices(self.lengths)
+            self.buffer = indices
+        else:
+            indices = self.buffer
+
+        active_total_samples = self.total_samples - self.last_batch_size
+        self.epoch = self.consumed_samples // active_total_samples
+        current_epoch_samples = self.consumed_samples % active_total_samples
+        assert current_epoch_samples % self.micro_batch_times_data_parallel_size == 0
+        bucket_size = (self.total_samples // self.micro_batch_times_data_parallel_size) * self.micro_batch_size
+        start_idx = self.data_parallel_rank * bucket_size
+        end_idx = (self.data_parallel_rank + 1) * bucket_size
+
+        idx_range = indices[start_idx:end_idx]
+
+        batch = []
+        # Last batch if not complete will be dropped.
+        for idx in idx_range:
+            batch.append(idx)
+            if len(batch) == self.micro_batch_size:
+                self.consumed_samples += self.micro_batch_times_data_parallel_size
+                yield batch
+                batch = []
