@@ -238,15 +238,33 @@ class InternModelPipe(PipelineModule, MegatronModule):
 
     def save_profile(self):
         if self.profile_path is not None:
-            if self.layer_profile:
-                for item in self.layer_profile_info:
-                    dist_save_obj_to_json(item, 'layer_time', self.profile_path)
             pp_rank = dist_env.get_pipeline_model_parallel_rank()
+            tp_rank = dist_env.get_tensor_model_parallel_rank()
+            dp_rank = dist_env.get_data_parallel_rank()
+            filepath = self.profile_path + f'layer_time_pp{pp_rank}_tp{tp_rank}.json'
+            if self.layer_profile:
+                gather_dp = [None for _ in range(dist_env.get_data_parallel_world_size())]
+                dist.all_gather_object(gather_dp, self.layer_profile_info, group=dist_env.get_data_parallel_group())
+                if dp_rank == 0:
+                    for dp_res in gather_dp:
+                        for item in dp_res:
+                            import json
+                            with open(filepath, 'a') as f:
+                                print(json.dumps(item), file=f, flush=True)
             if self.dc_profile is None:
-                for info in self.pp_profile:
-                    import json
-                    with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
-                        print(json.dumps(info), file=f, flush=True)
+                gather_dp = [None for _ in range(dist_env.get_data_parallel_world_size())]
+                dist.all_gather_object(gather_dp, self.pp_profile, group=dist_env.get_data_parallel_group())
+
+                gather_tp = [None for _ in range(dist_env.get_tensor_model_parallel_world_size())]
+                dist.all_gather_object(gather_tp, gather_dp, group=dist_env.get_tensor_model_parallel_group())
+                if tp_rank == 0 and dp_rank == 0:
+                    for tp_res in gather_tp:
+                        for dp_res in tp_res:
+                            for info in dp_res:
+                                import json
+                                path = os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt")
+                                with open(path, "a") as f:
+                                    print(json.dumps(info), file=f, flush=True)
 
     def get_seq_len(self, forward_input):
         # first stage
@@ -639,7 +657,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
             if self.profile_path is not None:
                 from .utils import reduce_list_data
                 self.parts = reduce_list_data(self.parts)
-                dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
+                # dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in self.parts]
