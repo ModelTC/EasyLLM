@@ -595,6 +595,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
                 info['ckpt_num'] = int(self.skip_checkpoint_layer_range)
                 info['used_memory'] = memory_info.used // (1024**2)
                 info['free_memory'] = memory_info.free // (1024**2)
+                info['part_parameters'] = self.parts_parameters
                 if self.dc_profile is not None:
                     if self.micro_offset > self.micro_batches:
                         self.pp_profile.append(info)
@@ -652,8 +653,8 @@ class InternModelPipe(PipelineModule, MegatronModule):
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
         else:
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
-        parts_parameters = self.get_parts_parameters(param_counts)
-        print("stage parameters", parts_parameters)
+        self.parts_parameters = self.get_parts_parameters(param_counts)
+        print("stage parameters", self.parts_parameters)
         # Print some information on the partitioning.
         if self.global_rank == 0:
             for stage in range(num_stages):
