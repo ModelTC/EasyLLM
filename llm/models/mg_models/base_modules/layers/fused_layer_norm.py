@@ -49,8 +49,8 @@ class RMSNorm(torch.nn.Module):
     def forward(self, input):
 
         if self.layernorm_tp_auto_sync or self.sequence_parallel:
-            torch.distributed.all_reduce(self.weight,
-                                         op=torch.distributed.ReduceOp.AVG,
+            torch.distributed.all_reduce(self.weight / dist_env.get_tensor_model_parallel_world_size(),
+                                         op=torch.distributed.ReduceOp.SUM,
                                          group=dist_env.get_tensor_model_parallel_group())
 
         if self.use_flash_attn and flash_attn_rms_norm and input.shape[-1] <= 8192:
