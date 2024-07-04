@@ -62,6 +62,43 @@ except ImportError:
     flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func = None, None
     unpad_input, pad_input = None, None
 
+import torch_npu
+
+
+class FlashSelfAttention(torch.nn.Module):
+    """Implement the scaled dot product attention with softmax.
+    Arguments
+    ---------
+        softmax_scale: The temperature to use for the softmax attention.
+                      (default: 1/sqrt(d_keys) where d_keys is computed at
+                      runtime)
+        attention_dropout: The dropout rate to apply to the attention
+                           (default: 0.0)
+    """
+
+    def __init__(self, causal=False, softmax_scale=1., attention_dropout=0.):
+        super().__init__()
+        self.causal = causal
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+    def forward(self, qkvn, pse, attention_mask):
+        q, k, v, n = qkvn
+
+        if self.causal:
+            output = torch_npu.npu_fusion_attention(
+                q, k, v, n, "BSND",
+                pse=pse,
+                padding_mask=None,
+                atten_mask=attention_mask,
+                scale=self.softmax_scale,
+                pre_tockens=k.shape[0],  # seq_len
+                next_tockens=0,  # 0
+                keep_prob=1 - self.dropout_p,
+            )[0]
+            return output
+        raise Exception("the attention type {} is not support!".format(self.attention_type))
+
 
 class FlashAttention(nn.Module):
     """Implement the scaled dot product attention with softmax.
@@ -371,7 +408,10 @@ class ParallelAttention(MegatronModule):
         self.attention_dropout = torch.nn.Dropout(attention_dropout)
 
         if self.use_flash_attn:
-            self.core_attention_flash = FlashAttention(
+            # self.core_attention_flash = FlashAttention(
+            #     causal=True, attention_dropout=attention_dropout
+            # )
+            self.core_attention_flash = FlashSelfAttention(
                 causal=True, attention_dropout=attention_dropout
             )
 
@@ -493,8 +533,12 @@ class ParallelAttention(MegatronModule):
                     qk_mask = ~attention_mask[:, 0, :, 0]
                 if cu_seqlens is not None:
                     qk_mask = None
+            if alibi is None:
+                matmul_result = None
             with dist_env.get_cuda_rng_tracker().fork():
-                context_layer = self.core_attention_flash(query_layer, key_layer, value_layer, qk_mask, cu_seqlens)
+                # context_layer = self.core_attention_flash(query_layer, key_layer, value_layer, qk_mask, cu_seqlens)
+                context_layer = self.core_attention_flash((query_layer, key_layer, value_layer, self.num_attention_heads_per_partition), matmul_result,
+                                                           attention_mask)
             context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
         else:
             if self.use_matmul:
@@ -529,7 +573,6 @@ class ParallelAttention(MegatronModule):
                     query_layer.transpose(0, 1),  # [b * np, sq, hn]
                     key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
                     beta=beta, alpha=(1.0 / self.norm_factor))
-                value_layer = value_layer.reshape(sk, bs, nk_head, -1)
 
             # change view to [b, np, sq, sk]
             attention_scores = matmul_result.view(bs, nq_head, sq, sk)
