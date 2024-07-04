@@ -119,8 +119,8 @@ def _add_distributed_args(parser):
                        help='Degree of tensor model parallelism.')
     group.add_argument('--pipeline-model-parallel-size', type=int, default=None,
                        help='Degree of pipeline model parallelism.')
-    group.add_argument('--distributed-backend', default='nccl',
-                       choices=['nccl', 'gloo'],
+    group.add_argument('--distributed-backend', default='hccl',
+                       choices=['nccl', 'gloo', 'hccl'],
                        help='Which backend to use for distributed training.')
     group.add_argument('--local_rank', type=int, default=None,
                        help='local rank passed from distributed launcher.')
