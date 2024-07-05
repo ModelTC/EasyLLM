@@ -444,6 +444,8 @@ class BaseRunner(object):
 
 def main():
     args = parse_args()
+    if os.environ.get('ACCELERATOR_BACKEND') == 'TORCH_NPU':
+        args.distributed_backend = 'hccl'
     assert args.config is not None, 'please provide a config file'
     cfg = load_yaml(args.config)
     runtime_none_keys = ['seed', 'local_rank', 'tensor_model_parallel_size',

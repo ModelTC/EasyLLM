@@ -7,13 +7,21 @@ import torch
 from torch.nn.parameter import Parameter
 from torch.nn import init
 import torch.nn.functional as F
-
 from llm.utils.env import dist_env
+import os
 
-try:
-    from flash_attn.ops.rms_norm import rms_norm as flash_attn_rms_norm
-except ImportError:
-    flash_attn_rms_norm = None
+
+if os.environ.get('ACCELERATOR_BACKEND', "CUDA") == 'CUDA':
+    try:
+        from flash_attn.ops.rms_norm import rms_norm as flash_attn_rms_norm
+    except ImportError:
+        flash_attn_rms_norm = None
+elif os.environ.get('ACCELERATOR_BACKEND') == 'TORCH_NPU':
+    from llm.models.mg_models.llama.npu_flash import flash_attn_rms_norm
+elif os.environ.get('ACCELERATOR_BACKEND') == 'DEEPLINK_DIPU':
+    pass
+else:
+    pass
 
 
 # no bias version
