@@ -3,6 +3,9 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
+def flash_attn_rms_norm(input, weight, eps):
+    return torch_npu.npu_rms_norm(input, weight, eps)[0]
+  
 def flash_attn_varlen_qkvpacked_func(
     qkv,
     cu_seqlens,
@@ -21,8 +24,12 @@ def flash_attn_varlen_qkvpacked_func(
     k = qkv[:, 1],
     v = qkv[:, 2],
     n = q.shape[1]
-    cu_seqlens_q = cu_seqlens[1:]
-    cu_seqlens_k = cu_seqlens[1:]
+    if max_seqlen > 2048:
+        sparse_mode = 2
+    else:
+        sparse_mode = 0
+    cu_seqlens_q = cu_seqlens[1:].tolist()
+    cu_seqlens_k = cu_seqlens[1:].tolist()
     seqlen = min(max_seqlen, 2048)
     attention_mask = (
             torch.triu(
@@ -39,6 +46,7 @@ def flash_attn_varlen_qkvpacked_func(
                 pre_tockens=q.shape[0],  # seq_len
                 next_tockens=0,  # 0
                 keep_prob=1 - dropout_p,
+                sparse_mode=sparse_mode,
                 actual_seq_qlen=cu_seqlens_q,
                 actual_seq_kvlen=cu_seqlens_k,
             )[0]
@@ -69,6 +77,11 @@ def flash_attn_varlen_kvpacked_func(
     seqlen_q = min(max_seqlen_q, 2048)
     seqlen_k = min(max_seqlen_k, 2048)
 
+    if max_seqlen_q > 2048:
+        sparse_mode = 2
+    else:
+        sparse_mode = 0
+
     attention_mask = (
             torch.triu(
                 torch.ones([seqlen_q, seqlen_k], dtype=torch.bool, device=q.device),
@@ -84,7 +97,7 @@ def flash_attn_varlen_kvpacked_func(
                 pre_tockens=q.shape[0],  # seq_len
                 next_tockens=0,  # 0
                 keep_prob=1 - dropout_p,
-                sparse_mode=2,
+                sparse_mode=sparse_mode,
                 actual_seq_qlen=cu_seqlens_q,
                 actual_seq_kvlen=cu_seqlens_k,
 
