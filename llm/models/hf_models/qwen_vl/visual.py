@@ -16,8 +16,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.init import trunc_normal_
-from torchvision import transforms
-from torchvision.transforms import InterpolationMode
+try:
+    from torchvision import transforms
+    from torchvision.transforms import InterpolationMode
+except:
+    transforms, InterpolationMode = None, None
 
 
 def get_abs_pos(abs_pos, tgt_size):
