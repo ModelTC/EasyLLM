@@ -19,7 +19,7 @@ if os.environ.get('ACCELERATOR_BACKEND', "CUDA") == 'CUDA':
 elif os.environ.get('ACCELERATOR_BACKEND') == 'TORCH_NPU':
     from llm.models.mg_models.llama.npu_flash import flash_attn_rms_norm
 elif os.environ.get('ACCELERATOR_BACKEND') == 'DEEPLINK_DIPU':
-    pass
+    from deeplink_ext.easyllm_ops import rms_norm as flash_attn_rms_norm
 else:
     pass
 

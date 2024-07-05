@@ -67,7 +67,7 @@ elif os.environ.get('ACCELERATOR_BACKEND') == 'TORCH_NPU':
     from .npu_flash import flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func
     from .npu_flash import unpad_input, pad_input
 elif os.environ.get('ACCELERATOR_BACKEND') == 'DEEPLINK_DIPU':
-    from deeplink_ext.easyllm_ops import flash_attn_qkvpacked_func, flash_attn_kvpacked_func, flash_attn_func, flash_attn_varlen_qkvpacked_func, flash_attn_varlen_kvpacked_func, flash_attn_varlen_func
+    from deeplink_ext.easyllm_ops import flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func
     from deeplink_ext.easyllm_ops.bert_padding import unpad_input, pad_input
 else:
     print("no backend support")
