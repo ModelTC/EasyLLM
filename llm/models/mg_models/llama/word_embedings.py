@@ -169,7 +169,7 @@ class EmbeddingPipe(Embedding):
         if len(inputs) == 4:
             return embeddings, attention_mask, cu_seqlens, position_ids
         else:
-            return embeddings, attention_mask
+            return embeddings
 
     @property
     def word_embeddings_weight(self):
