@@ -1,4 +1,5 @@
 import torch
+import os
 
 from llm.utils.env import dist_env
 from llm.utils.general.registry_factory import BATCH_FN_REGISTRY
@@ -202,6 +203,8 @@ class FlashBatchFunction(object):
         else:
             cu_seqlens = data_b['cu_seqlens']
             position_ids = data_b['position_ids']
+            if os.environ.get('ACCELERATOR_BACKEND', 'CUDA') != 'CUDA':
+                cu_seqlens = cu_seqlens.cpu()
             return (tokens, position_ids, attention_mask, cu_seqlens), (labels, loss_mask)
 
 

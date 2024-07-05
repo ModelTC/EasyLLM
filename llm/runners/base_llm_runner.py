@@ -93,7 +93,7 @@ class BaseRunner(object):
         # initialize env
         # Pytorch distributed.
         initialize_distributed(rank, local_rank, world_size, tensor_model_parallel_size,
-                               pipeline_model_parallel_size, cfg_runtime.get('distributed_backend', 'hccl'),
+                               pipeline_model_parallel_size, cfg_runtime.get('distributed_backend', 'nccl'),
                                self.args.launcher)
         # Initialize deepspeed random and activation checkpointing.
         if self.deepspeed:

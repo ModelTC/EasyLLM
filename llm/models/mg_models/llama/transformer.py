@@ -110,7 +110,10 @@ class FlashAttention(nn.Module):
             v = rearrange(v, 'b s ... -> (b s) ...')
             max_s = seqlen
             if cu_seqlens is None:
-                cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32, device=q.device)
+                if os.environ.get('ACCELERATOR_BACKEND', 'CUDA') != 'CUDA':
+                    cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32)
+                else:
+                    cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32, device=q.device)
             else:
                 cu_seqlens = cu_seqlens.view(-1).int()
             if k.shape[-2] == q.shape[-2]:
