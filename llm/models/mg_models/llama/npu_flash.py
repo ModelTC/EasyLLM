@@ -3,9 +3,11 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
+
 def flash_attn_rms_norm(input, weight, eps):
     return torch_npu.npu_rms_norm(input, weight, eps)[0]
-  
+
+
 def flash_attn_varlen_qkvpacked_func(
     qkv,
     cu_seqlens,
@@ -32,25 +34,26 @@ def flash_attn_varlen_qkvpacked_func(
     cu_seqlens_k = cu_seqlens[1:].tolist()
     seqlen = min(max_seqlen, 2048)
     attention_mask = (
-            torch.triu(
-                torch.ones([seqlen, seqlen], dtype=torch.bool, device=q.device),
-                diagonal=1,
-            )
-            if causal
-            else None
+        torch.triu(
+            torch.ones([seqlen, seqlen], dtype=torch.bool, device=q.device),
+            diagonal=1,
+        )
+        if causal
+        else None
     )
     out = torch_npu.npu_fusion_attention(
-                q, k, v, n, "TND",
-                atten_mask=attention_mask,
-                scale=softmax_scale,
-                pre_tockens=q.shape[0],  # seq_len
-                next_tockens=0,  # 0
-                keep_prob=1 - dropout_p,
-                sparse_mode=sparse_mode,
-                actual_seq_qlen=cu_seqlens_q,
-                actual_seq_kvlen=cu_seqlens_k,
-            )[0]
+        q, k, v, n, "TND",
+        atten_mask=attention_mask,
+        scale=softmax_scale,
+        pre_tockens=q.shape[0],  # seq_len
+        next_tockens=0,  # 0
+        keep_prob=1 - dropout_p,
+        sparse_mode=sparse_mode,
+        actual_seq_qlen=cu_seqlens_q,
+        actual_seq_kvlen=cu_seqlens_k,
+    )[0]
     return out
+
 
 def flash_attn_varlen_kvpacked_func(
     q,
@@ -83,25 +86,25 @@ def flash_attn_varlen_kvpacked_func(
         sparse_mode = 0
 
     attention_mask = (
-            torch.triu(
-                torch.ones([seqlen_q, seqlen_k], dtype=torch.bool, device=q.device),
-                diagonal=1,
-            )
-            if causal
-            else None
+        torch.triu(
+            torch.ones([seqlen_q, seqlen_k], dtype=torch.bool, device=q.device),
+            diagonal=1,
+        )
+        if causal
+        else None
     )
     out = torch_npu.npu_fusion_attention(
-                q, k, v, n, "TND",
-                atten_mask=attention_mask,
-                scale=softmax_scale,
-                pre_tockens=q.shape[0],  # seq_len
-                next_tockens=0,  # 0
-                keep_prob=1 - dropout_p,
-                sparse_mode=sparse_mode,
-                actual_seq_qlen=cu_seqlens_q,
-                actual_seq_kvlen=cu_seqlens_k,
+        q, k, v, n, "TND",
+        atten_mask=attention_mask,
+        scale=softmax_scale,
+        pre_tockens=q.shape[0],  # seq_len
+        next_tockens=0,  # 0
+        keep_prob=1 - dropout_p,
+        sparse_mode=sparse_mode,
+        actual_seq_qlen=cu_seqlens_q,
+        actual_seq_kvlen=cu_seqlens_k,
 
-            )[0]
+    )[0]
     return out
 
 
@@ -169,8 +172,8 @@ class IndexFirstAxisResidual(torch.autograd.Function):
     def forward(ctx, input, indices):
         ctx.save_for_backward(indices)
         assert input.ndim >= 2
-        ctx.first_axis_dim, other_shape = input.shape[0], input.shape[1:]
-        second_dim = other_shape.numel()
+        ctx.first_axis_dim, other_shape = input.shape[0], input.shape[1:]  # noqa
+        # second_dim = other_shape.numel()
         # TD [2022-03-04] For some reason torch.gather is a bit faster than indexing.
         output = input[indices]
         # We don't want to reshape input (b ... -> b (...)) since it could change the channel_last
@@ -225,9 +228,9 @@ def unpad_input(hidden_states, attention_mask):
 
 def unpad_input_for_concatenated_sequences(hidden_states, attention_mask_in_length):
     """
-    Supports concatenating short samples in one sequence. The attention_mask_in_length is utilized to mask other short samples. It helps efficient training of variant lengths-based samples (e.g., the supervised fine-tuning task in large language model).
+    Supports concatenating short samples in one sequence. The attention_mask_in_length is utilized to mask other short samples. It helps efficient training of variant lengths-based samples (e.g., the supervised fine-tuning task in large language model).    # noqa
     The motivation for this function is explained [here](https://github.com/Dao-AILab/flash-attention/issues/432#issuecomment-1668822286).
-    
+
     For example, if batch = 3 and seqlen = 6, the attention_mask_in_length is:
         ```
         [
@@ -306,7 +309,7 @@ def pad_input(hidden_states, indices, batch, seqlen):
     Return:
         hidden_states: (batch, seqlen, ...)
     """
-    dim = hidden_states.shape[-1]
+    # dim = hidden_states.shape[-1]
     # output = torch.zeros((batch * seqlen), dim, device=hidden_states.device, dtype=hidden_states.dtype)
     # output[indices] = hidden_states
     output = index_put_first_axis(hidden_states, indices, batch * seqlen)

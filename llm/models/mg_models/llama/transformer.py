@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Transformer."""
+from .transformer_engine import TEDotProductAttention
 import math
 import torch
 import torch.nn as nn
@@ -67,14 +68,10 @@ elif os.environ.get('ACCELERATOR_BACKEND') == 'TORCH_NPU':
     from .npu_flash import flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func
     from .npu_flash import unpad_input, pad_input
 elif os.environ.get('ACCELERATOR_BACKEND') == 'DEEPLINK_DIPU':
-    from deeplink_ext.easyllm_ops import flash_attn_qkvpacked_func, flash_attn_kvpacked_func, flash_attn_func, flash_attn_varlen_qkvpacked_func, flash_attn_varlen_kvpacked_func, flash_attn_varlen_func
+    from deeplink_ext.easyllm_ops import flash_attn_varlen_kvpacked_func, flash_attn_varlen_qkvpacked_func
     from deeplink_ext.easyllm_ops.bert_padding import unpad_input, pad_input
 else:
     print("no backend support")
-
-
-
-from .transformer_engine import TEDotProductAttention
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -109,7 +106,7 @@ class FlashAttention(nn.Module):
 
     def __init__(self, causal=False, softmax_scale=None, attention_dropout=0.0):
         super().__init__()
-        assert flash_attn_varlen_qkvpacked_func is not None, ('Please install FlashAttention first, ' 'e.g., with pip install flash-attn') # noqa
+        assert flash_attn_varlen_qkvpacked_func is not None, ('Please install FlashAttention first, ' 'e.g., with pip install flash-attn')  # noqa
         self.softmax_scale = softmax_scale
         self.dropout_p = attention_dropout
         self.causal = causal
@@ -341,7 +338,7 @@ class ParallelAttention(MegatronModule):
         self.hidden_size_per_partition, self.hidden_size_per_attention_head, self.num_attention_heads_per_partition = \
             partion_attention_head(projection_size, num_attention_heads)
 
-        self.hidden_size_kv_per_partition, self.hidden_size_per_kv_attention_head, self.num_kv_attention_heads_per_partition = partion_attention_head(projection_size_kv, num_kv_attention_heads) # noqa
+        self.hidden_size_kv_per_partition, self.hidden_size_per_kv_attention_head, self.num_kv_attention_heads_per_partition = partion_attention_head(projection_size_kv, num_kv_attention_heads)  # noqa
 
         # Strided linear layer.
         if attention_type == AttnType.self_attn:
@@ -501,7 +498,7 @@ class ParallelAttention(MegatronModule):
                 offset = layer_past[0].shape[0]
                 seq_len += offset
             cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
-            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset, position_ids=position_ids) # noqa
+            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset, position_ids=position_ids)  # noqa
         elif self.position_embedding_type == PositionEmbeddingType.flash:
             query_layer = query_layer.reshape(sq, bs, nq_head, -1)
             key_layer = key_layer.reshape(sk, bs, nk_head, -1)
@@ -543,7 +540,7 @@ class ParallelAttention(MegatronModule):
                 query_layer = query_layer.reshape(sq, bs, nq_head, -1)
                 key_layer = key_layer.reshape(sk, bs, nk_head, -1)
                 value_layer = value_layer.reshape(sk, bs, nk_head, -1)
-                query_layer, key_layer, value_layer = [rearrange(x, 's b ... -> b s ...').contiguous() for x in (query_layer, key_layer, value_layer)] # noqa
+                query_layer, key_layer, value_layer = [rearrange(x, 's b ... -> b s ...').contiguous() for x in (query_layer, key_layer, value_layer)]  # noqa
 
             if attention_mask is None:
                 qk_mask = None

@@ -19,7 +19,7 @@ from torch.nn.init import trunc_normal_
 try:
     from torchvision import transforms
     from torchvision.transforms import InterpolationMode
-except:
+except BaseException:
     transforms, InterpolationMode = None, None
 
 
@@ -100,6 +100,7 @@ class Resampler(nn.Module):
     Outputs:
         A tensor with the shape of (grid_size**2, embed_dim)
     """
+
     def __init__(
             self,
             grid_size,
