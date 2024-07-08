@@ -50,7 +50,8 @@ _SHARED_DEFAULT_CONFIG = {
     "initializer_factor": 0.1,
     "qk_normalization": True,
     "proj_dropout": 0.0,
-    "image_fold": False
+    "image_fold": False,
+    "down_sample_ratio": 0.5
 }
 
 
@@ -342,6 +343,7 @@ _VISION_EXTRACT_FEAT_DEFAULT_CONFIG = {
     "sequence_parallel": False,
     "image_size": None,
     "patch_size": None,
+    "down_sample_ratio": None
 }
 
 
@@ -354,7 +356,8 @@ def update_vision_extract_feat_config(cfg, shared_default):
                            "sequence_parallel": "vision_sequence_parallel",
                            "image_size": "vision_image_size",
                            "patch_size": "vision_patch_size",
-                           "image_fold": "image_fold"}
+                           "image_fold": "image_fold",
+                           "down_sample_ratio": "down_sample_ratio"}
     for emk in shared_keys_mapping:
         sk = shared_keys_mapping[emk]
         vision_extract_feat_default.update({emk: shared_default[sk]})

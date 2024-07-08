@@ -37,19 +37,19 @@ class VisionExtractFeat(MegatronModule):
         image_size=224,
         patch_size=14,
         image_fold=False,
-        ps_version='v2'
+        ps_version='v2',
+        down_sample_ratio=0.5
     ):
         super().__init__()
         self.vit_select_layer = vit_select_layer
         params_dtype = get_torch_dtype(params_dtype)
         self.sequence_parallel = sequence_parallel
+        self.scale_factor = down_sample_ratio
 
-        if image_size == 224:
-            hidden_size_scale = 1
-            self.scale_factor = 1
-        else:
+        if down_sample_ratio == 0.5:
             hidden_size_scale = 4
-            self.scale_factor = 0.5
+        if down_sample_ratio == 1:
+            hidden_size_scale = 1
 
         self.mlp1_norm = nn.LayerNorm(vit_hidden_size * hidden_size_scale, dtype=params_dtype)
         self.mlp1_fc1 = ColumnParallelLinear(vit_hidden_size * hidden_size_scale, llm_hidden_size, gather_output=False, params_dtype=params_dtype)
@@ -114,10 +114,7 @@ class VisionExtractFeat(MegatronModule):
         vit_embeds, _ = self.mlp1_fc1(vit_embeds)
         vit_embeds = self.mlp1_act(vit_embeds)
         vit_embeds, _ = self.mlp1_fc2(vit_embeds)
-        # if len(inputs) == 4:
-        #     return vit_embeds, input_ids, position_ids, image_flags
-        # elif len(inputs) == 5:
-        #     return vit_embeds, input_ids, position_ids, image_flags, cu_seqlens
+        # import ipdb; ipdb.set_trace()
         if len(inputs) == 6:
             return vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels
         elif len(inputs) == 7:

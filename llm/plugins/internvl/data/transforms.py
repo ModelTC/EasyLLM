@@ -220,7 +220,7 @@ class InternvlToolParser(object):
                                                   max_num=self.max_dynamic_patch,
                                                   image_size=self.image_size,
                                                   use_thumbnail=self.use_thumbnail)
-                pixel_values = torch.empty((num_patches, 3, 448, 448))
+                pixel_values = torch.empty((num_patches, 3, self.image_size, self.image_size))
             if not self.dynamic_image_size:
                 assert num_patches == 1, f'The number of patches should be 1, but got {num_patches}.'
 
