@@ -174,6 +174,8 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 llm_layer_set.add(i)
             else:
                 continue
+        self.pure_vit_stage_id = 0
+        self.pure_llm_stage_id = dist_env.get_pipeline_model_parallel_world_size() - 1
         for i in range(0, len(self.parts) - 1):
             vit_num = 0
             llm_num = 0
@@ -184,6 +186,11 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                     llm_num += 1
             self.pp_vit_llm_layer_num.append([vit_num, llm_num])
             self.pp_checkpoint_num.append(vit_num + llm_num)
+
+        for idx, vit_llm_layer_num in enumerate(self.pp_vit_llm_layer_num):
+            if vit_llm_layer_num[0] == 0:
+                self.pure_llm_stage_id = idx
+                break
 
         self.pp_status = 0
         self.memory_cost_vit_llm = [0, 0]
@@ -231,15 +238,33 @@ class EVAModelPipe(PipelineModule, MegatronModule):
 
     def save_profile(self):
         if self.profile_path is not None:
-            if self.layer_profile:
-                for item in self.layer_profile_info:
-                    dist_save_obj_to_json(item, 'layer_time', self.profile_path)
             pp_rank = dist_env.get_pipeline_model_parallel_rank()
+            tp_rank = dist_env.get_tensor_model_parallel_rank()
+            dp_rank = dist_env.get_data_parallel_rank()
+            filepath = self.profile_path + f'layer_time_pp{pp_rank}_tp{tp_rank}.json'
+            if self.layer_profile:
+                gather_dp = [None for _ in range(dist_env.get_data_parallel_world_size())]
+                dist.all_gather_object(gather_dp, self.layer_profile_info, group=dist_env.get_data_parallel_group())
+                if dp_rank == 0:
+                    for dp_res in gather_dp:
+                        for item in dp_res:
+                            import json
+                            with open(filepath, 'a') as f:
+                                print(json.dumps(item), file=f, flush=True)
             if self.dc_profile is None:
-                for info in self.pp_profile:
-                    import json
-                    with open(os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt"), "a") as f:
-                        print(json.dumps(info), file=f, flush=True)
+                gather_dp = [None for _ in range(dist_env.get_data_parallel_world_size())]
+                dist.all_gather_object(gather_dp, self.pp_profile, group=dist_env.get_data_parallel_group())
+
+                gather_tp = [None for _ in range(dist_env.get_tensor_model_parallel_world_size())]
+                dist.all_gather_object(gather_tp, gather_dp, group=dist_env.get_tensor_model_parallel_group())
+                if tp_rank == 0 and dp_rank == 0:
+                    for tp_res in gather_tp:
+                        for dp_res in tp_res:
+                            for info in dp_res:
+                                import json
+                                path = os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt")
+                                with open(path, "a") as f:
+                                    print(json.dumps(info), file=f, flush=True)
 
     def get_seq_len(self, forward_input):
         # first stage
@@ -297,7 +322,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         world_size = dist_env.get_pipeline_model_parallel_world_size()
         pp_profile_list = []
         import json
-        for rank in [0, world_size - 1]:
+        for rank in [self.pure_vit_stage_id, self.pure_llm_stage_id]:
             with open(os.path.join(self.profile_path, f"pp_stage_{rank}.txt")) as f:
                 temp = []
                 for line in f.readlines():
@@ -359,10 +384,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         if y in result:
             llm_cost = float(result[y])
         self.memory_cost_vit_llm = [vit_cost, llm_cost]
-        if os.path.exists(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")):
-            with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")) as f:
-                self.memory_cost_vit_llm = json.loads(f.readlines()[0])
-        else:
+        if dist_env.get_global_rank() == 0:
             with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt"), "a") as f:
                 print(json.dumps(self.memory_cost_vit_llm), file=f, flush=True)
         print(pp_rank, "vit llm memory cost", self.memory_cost_vit_llm)
@@ -398,10 +420,10 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         elif self.micro_offset == self.micro_batches * step_num:
             vit_memory_estimate = self.dc_profile.get('vit_memory_estimate', 2)
             llm_memory_estimate = self.dc_profile.get('llm_memory_estimate', 1)
-            free_memory = max(self.ave_free_memory() - self.dc_profile['min_memory'] * 1024, 0)
-            if rank == 0:  # for vision
+            free_memory = self.ave_free_memory() - self.dc_profile['min_memory'] * 1024
+            if rank == self.pure_vit_stage_id:  # for vision
                 ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * vit_memory_estimate)
-            if rank == world_size - 1:  # for llm
+            if rank == self.pure_llm_stage_id:  # for llm
                 ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * llm_memory_estimate)
             self.warmup_ckpt_num = ckpt_num
         return max(self.warmup_ckpt_num, 1)
@@ -445,7 +467,6 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             if item['ckpt_num'] == self.pp_checkpoint_num[pp_rank]:
                 free_memory_list.append(item['free_memory'])
         min_free_memory = min(free_memory_list)
-
         self.min_free_memory = min(self.min_free_memory, min_free_memory)
         if self.min_free_memory < predefine_memory:
             no_ckpt_num = 0
@@ -453,9 +474,17 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             no_ckpt_num = max(self.get_nockpt_num(self.min_free_memory - predefine_memory), 0)
         final_ckpt_num = max(self.pp_checkpoint_num[pp_rank] - no_ckpt_num, 0)
         final_ckpt_num = torch.FloatTensor([final_ckpt_num]).cuda()
+        # if current free memory < prefine_memory, we add final_ckpt_num
+        if self.pp_profile[-1]['free_memory'] < predefine_memory:
+            if pp_rank < self.pure_llm_stage_id:
+                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[0] + 1
+            else:
+                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[1] + 1      
+            final_ckpt_num += add_num
         dist.all_reduce(final_ckpt_num, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
         dist.all_reduce(final_ckpt_num, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)
         final_ckpt_num = int(final_ckpt_num.cpu().item())
+
         return final_ckpt_num
 
     def forward(self, forward_input):
@@ -585,6 +614,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 info['ckpt_num'] = int(self.skip_checkpoint_layer_range)
                 info['used_memory'] = memory_info.used // (1024**2)
                 info['free_memory'] = memory_info.free // (1024**2)
+                info['part_parameters'] = self.parts_parameters
                 if self.dc_profile is not None:
                     if self.micro_offset > self.micro_batches:
                         self.pp_profile.append(info)
@@ -598,6 +628,15 @@ class EVAModelPipe(PipelineModule, MegatronModule):
     def _set_model_kwargs(self, num_vit_layers, num_layers, checkpoint_activations):
         self.model_kwargs = {"num_vit_layers": num_vit_layers, "num_layers": num_layers, "checkpoint_activations": checkpoint_activations}
 
+    def get_parts_parameters(self, param_counts):
+        parts_parameters = []
+        for i in range(len(self.parts) - 1):
+            p_sum = 0
+            for j in range(self.parts[i], self.parts[i + 1]):
+                p_sum += param_counts[j]
+            parts_parameters.append(p_sum / (1024.**3))
+        return parts_parameters
+
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
         stage_id = self._topo.get_coord(self.global_rank).pipe
@@ -606,7 +645,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             logger.info(f'Partitioning pipeline stages with method {method}')
 
         method = method.lower()
-
+        param_counts = self._count_layer_params()
         # Each stage gets a simple uniform number of layers.
         if method == 'uniform':
             num_layers = len(self._layer_specs)
@@ -614,10 +653,10 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         elif method == 'parameters':
             param_counts = self._count_layer_params()
             self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
-            if self.profile_path is not None:
-                from .utils import reduce_list_data
-                self.parts = reduce_list_data(self.parts)
-                dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
+            from .utils import reduce_list_data
+            self.parts = reduce_list_data(self.parts)
+            # if self.profile_path is not None:
+            #     from .utils import reduce_list_data
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in self.parts]
@@ -631,7 +670,8 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
         else:
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
-
+        self.parts_parameters = self.get_parts_parameters(param_counts)
+        print("stage parameters", self.parts_parameters)
         # Print some information on the partitioning.
         if self.global_rank == 0:
             for stage in range(num_stages):

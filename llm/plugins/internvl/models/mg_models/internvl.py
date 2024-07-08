@@ -368,6 +368,13 @@ class InternModelPipe(PipelineModule, MegatronModule):
         from sympy import Symbol, solve
         x = Symbol('x')
         y = Symbol('y')
+
+        if vit_nockpt_num2 == 0 and llm_nockpt_num2 == 0:
+            cost_memory2 = 0
+
+        if vit_nockpt_num1 == 0 and llm_nockpt_num1 == 0:
+            cost_memory1 = 0
+
         result = solve([vit_nockpt_num1 * x + llm_nockpt_num1 * y - cost_memory1, vit_nockpt_num2 * x + llm_nockpt_num2 * y - cost_memory2], [x, y])
         vit_cost = self.dc_profile.get('vit_memory_estimate', 2) * 1024
         llm_cost = self.dc_profile.get('llm_memory_estimate', 1) * 1024
@@ -376,10 +383,7 @@ class InternModelPipe(PipelineModule, MegatronModule):
         if y in result:
             llm_cost = float(result[y])
         self.memory_cost_vit_llm = [vit_cost, llm_cost]
-        if os.path.exists(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")):
-            with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt")) as f:
-                self.memory_cost_vit_llm = json.loads(f.readlines()[0])
-        else:
+        if dist_env.get_global_rank() == 0:
             with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt"), "a") as f:
                 print(json.dumps(self.memory_cost_vit_llm), file=f, flush=True)
         print(pp_rank, "vit llm memory cost", self.memory_cost_vit_llm)
@@ -654,9 +658,9 @@ class InternModelPipe(PipelineModule, MegatronModule):
             self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
             from .utils import reduce_list_data
             self.parts = reduce_list_data(self.parts)
-            if self.profile_path is not None:
-                from .utils import reduce_list_data
-                self.parts = reduce_list_data(self.parts)
+            # if self.profile_path is not None:
+            #     from .utils import reduce_list_data
+                # self.parts = reduce_list_data(self.parts)
                 # dist_save_obj_to_json({'parts': self.parts}, 'meta', self.profile_path)
         elif "manual" in method:
             self.parts = method.split("manual:")[1].split(',')
