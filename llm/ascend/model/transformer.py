@@ -22,7 +22,7 @@ import logging
 import numpy as np
 import deepspeed
 import torch
-import torch_npu
+# import torch_npu
 import torch.nn.functional as F
 from torch import einsum, nn
 from torch import distributed as dist
@@ -35,15 +35,17 @@ from ascend.core.enums import ModelType
 from ascend import get_args, get_timers, get_num_microbatches, get_retro_args
 from ascend.core import core_utils, parallel_state, tensor_parallel
 from ascend.enums import PositionEmbeddingType
-from ascend.core.transformer.module.flash_attention import FlashSelfAttention
+# from ascend.core.transformer.module.flash_attention import FlashSelfAttention
 from ascend.core.enums import AttnMaskType, LayerType, AttnType
-from ascend.model.fused_softmax import NPUFusedScaleMaskSoftmax
-from ascend.core.models.common.rotary_pos_embedding import apply_rotary_pos_emb, apply_fused_rotary_pos_emb
-from ascend.core.transformer.module.triangle_attention import TriangleAttention
+# from ascend.model.fused_softmax import NPUFusedScaleMaskSoftmax
+from llm.models.mg_models.base_modules.layers.fused_softmax import FusedScaleMaskSoftmax
+from ascend.core.models.common.rotary_pos_embedding import apply_rotary_pos_emb # , apply_fused_rotary_pos_emb
+# from ascend.core.transformer.module.triangle_attention import TriangleAttention
 from ascend.model.fused_bias_gelu import bias_gelu_impl
 from ascend.model.module import MegatronModule
 from ascend.model.utils import attention_mask_func, openai_gelu, erf_gelu, get_norm, get_inverted_mask
 from llm.utils.general.error_utils import check_divisible, check_equal, ensure_valid
+from llm.models.mg_models.llama.transformer import FlashAttention
 
 logger = logging.getLogger(__name__)
 
@@ -304,11 +306,19 @@ class CoreAttention(MegatronModule):
         if self.apply_query_key_layer_scaling:
             coeff = self.layer_number
             self.norm_factor *= coeff
-        self.scale_mask_softmax = NPUFusedScaleMaskSoftmax(
-            config,
+        # self.scale_mask_softmax = NPUFusedScaleMaskSoftmax(
+        #     config,
+        #     self.attn_mask_type,
+        #     config.masked_softmax_fusion,
+        #     attention_mask_func,
+        #     coeff)
+
+        self.scale_mask_softmax = FusedScaleMaskSoftmax(
+            self.fp16, self.bf16,
             self.attn_mask_type,
             config.masked_softmax_fusion,
             attention_mask_func,
+            self.attention_softmax_in_fp32,
             coeff)
 
         # Dropout. Note that for a single iteration, this layer will generate
@@ -318,11 +328,15 @@ class CoreAttention(MegatronModule):
 
         self.use_flash_attn = config.use_flash_attn
         if self.use_flash_attn:
-            softmax_scale = (1.0 / self.norm_factor)
-            if coeff is not None:
-                softmax_scale = (1.0 / self.norm_factor) * coeff
-            self.core_flash_attn = FlashSelfAttention(causal=True, softmax_scale=softmax_scale,
-                                                      attention_dropout=config.attention_dropout)
+            # softmax_scale = (1.0 / self.norm_factor)
+            # if coeff is not None:
+            #     softmax_scale = (1.0 / self.norm_factor) * coeff
+            # self.core_flash_attn = FlashSelfAttention(causal=True, softmax_scale=softmax_scale,
+            #                                           attention_dropout=config.attention_dropout)
+            self.core_flash_attn = FlashAttention(
+                causal=True, attention_dropout=config.attention_dropout
+            )
+
         self.square_alibi_mask = args.square_alibi_mask
         self.max_seq_length = args.seq_length
         self.fill_neg_inf = args.fill_neg_inf
@@ -364,9 +378,14 @@ class CoreAttention(MegatronModule):
                 # [b*np, sq, sq] ==> [b, np, sq, sq]
                 matmul_result = matmul_result.reshape(output_size[0], output_size[1], output_size[2],
                                                       output_size[2]) * self.beta * self.norm_factor
-            q, k, v = [rearrange(x, 's b h d -> s b (h d)').contiguous() for x in (query_layer, key_layer, value_layer)]
-            context_layer = self.core_flash_attn((q, k, v, self.num_attention_heads_per_partition), matmul_result,
-                                                  attention_mask)
+            # q, k, v = [rearrange(x, 's b h d -> s b (h d)').contiguous() for x in (query_layer, key_layer, value_layer)]
+            # context_layer = self.core_flash_attn((q, k, v, self.num_attention_heads_per_partition), matmul_result,
+            #                                       attention_mask)
+            query_layer, key_layer, value_layer = [rearrange(x, 's b ... -> b s ...').contiguous() for x in (query_layer, key_layer, value_layer)] # noqa
+            qk_mask, cu_seqlens = None, None
+            import pdb;pdb.set_trace()
+            context_layer = self.core_flash_attn(query_layer, key_layer, value_layer, qk_mask, cu_seqlens)
+            context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
         else:
             # Raw attention scores. [b * np, sq, sk]
             q_trans = query_layer.transpose(0, 1).contiguous()
@@ -521,25 +540,25 @@ class ParallelAttention(MegatronModule):
                 gather_output=False)
         self.position_embedding_type = args.position_embedding_type
         self.apply_rotary_pos_emb = apply_rotary_pos_emb
-        if args.use_fused_rotary_pos_emb:
-            self.apply_rotary_pos_emb = apply_fused_rotary_pos_emb
+        # if args.use_fused_rotary_pos_emb:
+        #     self.apply_rotary_pos_emb = apply_fused_rotary_pos_emb
         self.norm_factor = math.sqrt(self.hidden_size_per_attention_head)
 
         self.use_triangle_attn = args.triangle_attn
-        if self.use_triangle_attn:
-            self.scale_mask_softmax = NPUFusedScaleMaskSoftmax(
-                config,
-                self.attn_mask_type,
-                args.masked_softmax_fusion,
-                attention_mask_func,
-                (1 / self.norm_factor))
-            self.block_size = args.triangle_block_size
-            self.triangle_attn = TriangleAttention(block_size=self.block_size,
-                                                   masked_softmax_func=self.scale_mask_softmax)
+        # if self.use_triangle_attn:
+        #     self.scale_mask_softmax = NPUFusedScaleMaskSoftmax(
+        #         config,
+        #         self.attn_mask_type,
+        #         args.masked_softmax_fusion,
+        #         attention_mask_func,
+        #         (1 / self.norm_factor))
+        #     self.block_size = args.triangle_block_size
+        #     self.triangle_attn = TriangleAttention(block_size=self.block_size,
+        #                                            masked_softmax_func=self.scale_mask_softmax)
 
-        else:
-            self.core_attention = CoreAttention(self.layer_number, config,
-                                                self.attn_mask_type)
+        # else:
+        self.core_attention = CoreAttention(self.layer_number, config,
+                                            self.attn_mask_type)
 
         # 适配internlm模型
         bias = getattr(config, "row_parallel_linear_bias", args.add_bias_linear)
@@ -1112,6 +1131,7 @@ class ParallelTransformerLayer(MegatronModule):
         # hidden_states: [s, b, h]
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
+        import pdb;pdb.set_trace()
         # Self attention.
         attention_output, attention_bias = \
             self.self_attention(layernorm_output,

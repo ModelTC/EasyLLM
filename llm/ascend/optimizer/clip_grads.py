@@ -70,7 +70,8 @@ def clip_grad_norm_fp32(parameters, grads_for_norm,
     grads = []
     for param in parameters:
         if param.grad is not None:
-            check_equal(param.grad.type(), 'torch.npu.FloatTensor')
+            # check_equal(param.grad.type(), 'torch.npu.FloatTensor')
+            check_equal(param.grad.type(), 'torch.cuda.FloatTensor')
             grads.append(param.grad.detach())
 
     # Norm parameters.

@@ -4,7 +4,7 @@ import contextlib
 from typing import Iterator, List, Union
 
 import torch
-import torch_npu
+# import torch_npu
 from torch.autograd.variable import Variable
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from ascend import get_args
@@ -23,22 +23,22 @@ from llm.utils.general.error_utils import check_equal, check_type, ensure_var_is
 Shape = Union[List[int], torch.Size]
 
 
-def clear_npu_overflow_flag():
-    float_status = torch.zeros(8).npu()  # 8 bit for overflow
-    result = torch_npu.npu_clear_float_status(float_status)
+# def clear_npu_overflow_flag():
+#     float_status = torch.zeros(8).npu()  # 8 bit for overflow
+#     result = torch_npu.npu_clear_float_status(float_status)
 
 
-def get_npu_overflow_flag():
-    float_status = torch.zeros(8).npu()  # 8 bit for overflow
-    result = torch_npu.npu_get_float_status(float_status)
-    if float_status.cpu()[0] != 0:
-        return True
-    else:
-        return False
+# def get_npu_overflow_flag():
+#     float_status = torch.zeros(8).npu()  # 8 bit for overflow
+#     result = torch_npu.npu_get_float_status(float_status)
+#     if float_status.cpu()[0] != 0:
+#         return True
+#     else:
+#         return False
 
 
-def set_npu_overflow_flag():
-    torch.tensor([65504]).half().npu() + 100  # fp16 overflow flag
+# def set_npu_overflow_flag():
+#     torch.tensor([65504]).half().npu() + 100  # fp16 overflow flag
 
 
 def get_forward_backward_func():
@@ -306,7 +306,7 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, c
         output_tensor = [output_tensor]
     if not isinstance(output_tensor_grad, list):
         output_tensor_grad = [output_tensor_grad]
-    clear_npu_overflow_flag()
+    # clear_npu_overflow_flag()
     # Backward pass.
     if args.deepspeed:
         model.backward(output_tensor[0])
@@ -397,8 +397,8 @@ def forward_backward_no_pipelining(
                                          input_tensor, forward_data_store, config, collect_non_loss_data)
             if not forward_only:
                 backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config, model)
-            overflow_flag = get_npu_overflow_flag()
-            overflow_flag_all = overflow_flag or overflow_flag_all
+            # overflow_flag = get_npu_overflow_flag()
+            # overflow_flag_all = overflow_flag or overflow_flag_all
     if args.deepspeed:
         model.set_gradient_accumulation_boundary(True)
 
@@ -409,11 +409,11 @@ def forward_backward_no_pipelining(
 
     if not forward_only:
         backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config, model)
-    overflow_flag = get_npu_overflow_flag()
-    overflow_flag_all = overflow_flag or overflow_flag_all
+    # overflow_flag = get_npu_overflow_flag()
+    # overflow_flag_all = overflow_flag or overflow_flag_all
 
-    if overflow_flag_all:
-        set_npu_overflow_flag()
+    # if overflow_flag_all:
+    #     set_npu_overflow_flag()
 
     return forward_data_store
 

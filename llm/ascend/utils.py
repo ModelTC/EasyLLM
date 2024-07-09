@@ -19,11 +19,15 @@ import stat
 import sys
 import enum
 import copy
+import logging
 from contextlib import contextmanager
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as torchDDP
-import torch_npu
+try:
+    import torch_npu
+except Exception as e:
+    logging.warning("Warning: You did not install torch_npu or deepspeed_npu")
 
 from deepspeed.accelerator import get_accelerator
 if get_accelerator().device_name() == 'cuda':

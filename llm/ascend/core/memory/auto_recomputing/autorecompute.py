@@ -2,7 +2,7 @@ import time
 
 import torch
 import torch.nn
-import torch_npu
+# import torch_npu
 
 from ascend import print_rank_0
 from ascend.global_vars import get_args

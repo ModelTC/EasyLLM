@@ -20,6 +20,7 @@ from ascend.arguments import core_transformer_config_from_args
 import deepspeed
 from deepspeed.accelerator import get_accelerator
 from ascend.optimizer import build_megatron_optimizer
+# from llm.utils.model.optimizer_helper import build_optimizer
 from ascend.model import get_model
 from ascend.checkpoint import load_ckpt_pretrained
 from ascend.model.gpt_model import GPTModelPipe
@@ -228,6 +229,7 @@ class BaseRunner(object):
         if self.training:
             cfg_optim = self.config['trainer']['optimizer']
             optimizer = build_megatron_optimizer(unwrapped_model)
+            # optimizer = build_optimizer(cfg_optim, unwrapped_model[0], deepspeed=self.deepspeed)
             cfg_lr_scheduler = self.config['trainer']['lr_scheduler']
             cfg_lr_scheduler['kwargs']['max_lr'] = cfg_optim['lr']        # noqa
             if cfg_lr_scheduler['type'] == 'iter_base_annealing':

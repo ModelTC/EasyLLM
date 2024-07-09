@@ -30,7 +30,7 @@ def parse_args():
     parser = _add_inference_args(parser)
     parser = _add_medusa_args(parser)
     parser = _add_distributed_args(parser)
-    if os.environ["ASCEND_RUNTIME"]:
+    if os.environ.get("ASCEND_RUNTIME", None):
         parser = _parse_extra_ascend_args(parser)
         
     parser = deepspeed.add_config_arguments(parser)

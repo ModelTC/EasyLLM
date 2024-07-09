@@ -2,7 +2,7 @@ import sys
 
 import networkx as nx
 import torch
-import torch_npu
+# import torch_npu
 
 from ascend import print_rank_0
 from ascend.core import parallel_state

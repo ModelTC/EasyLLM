@@ -20,8 +20,8 @@ from ascend import get_args
 from ascend.model import LayerNorm
 from ascend.model.fused_layer_norm import MixedFusedLayerNorm
 from ascend.model.lora_utils import is_enable_lora
-from ascend.optimizer.adam import AdamW as Adam
-from ascend.optimizer.cadam import CAdamW as CAdam
+# from ascend.optimizer.adam import AdamW as Adam
+# from ascend.optimizer.cadam import CAdamW as CAdam
 from llm.utils.general.error_utils import check_equal
 
 from .grad_scaler import ConstantGradScaler, DynamicGradScaler
@@ -150,6 +150,12 @@ def build_megatron_optimizer(model):
                             lr=args.lr,
                             weight_decay=args.weight_decay,
                             beta=args.adam_beta1)
+        elif args.optimizer == "adam_easyllm":
+            optimizer = torch.optim.AdamW(param_groups,
+                                          lr=args.lr,
+                                          weight_decay=args.weight_decay,
+                                          betas=(args.adam_beta1, args.adam_beta2),
+                                          eps=args.adam_eps)
         else:
             raise Exception('{} optimizer is not supported.'.format(
             args.optimizer))

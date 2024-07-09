@@ -527,6 +527,7 @@ class TransformerLanguageModel(MegatronModule):
                 pooling_sequence_index=0,
                 enc_hidden_states=None, output_enc_hidden=False):
 
+        import pdb;pdb.set_trace()
         # Encoder embedding.
         if self.pre_process:
             encoder_input = self.embedding(enc_input_ids, enc_position_ids,

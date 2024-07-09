@@ -2,7 +2,7 @@
 
 import torch
 from torch import nn
-import torch_npu
+# import torch_npu
 from ascend import get_args
 
 
@@ -32,7 +32,7 @@ class RMSNorm(torch.nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        if self.use_fused_rmsnorm:
-            return torch_npu.npu_rms_norm(x, self.weight, epsilon=self.eps)[0]
+        # if self.use_fused_rmsnorm:
+        #     return torch_npu.npu_rms_norm(x, self.weight, epsilon=self.eps)[0]
         output = self._norm(x.float()).type_as(x)
         return output * self.weight

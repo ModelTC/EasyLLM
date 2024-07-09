@@ -2,7 +2,7 @@
 
 import torch
 from torch import nn
-import torch_npu
+# import torch_npu
 
 from llm.utils.general.error_utils import check_divisible_by_zero
 
@@ -26,7 +26,10 @@ class RotaryEmbedding(nn.Module):
         if rotary_percent < 1.0:
             dim = int(dim * rotary_percent)
         self.seq_len_interpolation_factor = seq_len_interpolation_factor
-        exponent = torch.arange(0, dim, 2).double().to(torch.npu.current_device()) / dim
+        try:
+            exponent = torch.arange(0, dim, 2).double().to(torch.npu.current_device()) / dim
+        except:
+            exponent = torch.arange(0, dim, 2).double().to(torch.cuda.current_device()) / dim
         self.inv_freq = 1.0 / (base ** exponent).float()
 
     def forward(self, max_seq_len, offset=0):
@@ -82,7 +85,7 @@ def apply_rotary_pos_emb(t, freqs):
     return torch.cat((t, t_pass), dim=-1)
 
 
-def apply_fused_rotary_pos_emb(t, freqs):
-    cos = torch.cos(freqs)
-    sin = torch.sin(freqs)
-    return torch_npu.npu_rotary_mul(t, cos, sin).to(t.dtype)
+# def apply_fused_rotary_pos_emb(t, freqs):
+#     cos = torch.cos(freqs)
+#     sin = torch.sin(freqs)
+#     return torch_npu.npu_rotary_mul(t, cos, sin).to(t.dtype)
