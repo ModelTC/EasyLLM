@@ -66,7 +66,7 @@ def permute_qkv_weight(w, model_config, split=False):
         q, k, v = w.split([gp * repeats * hn, gp * hn, gp * hn], 0)
         return torch.cat([q.reshape(gp, repeats * hn, -1),
                           k.reshape(gp, hn, -1),
-                          v.reshape(gp, hn, -1)], 1).reshape(w_s0, w_s1).contiguous().clone()
+                          v.reshape(gp, hn, -1)], 0).reshape(w_s0, w_s1).contiguous().clone()
     q, k, v = w.reshape(gp, -1, w_s1).split([repeats * hn, hn, hn], 1)
     return torch.cat([q.reshape(-1, w_s1),
                       k.reshape(-1, w_s1),

@@ -368,7 +368,7 @@ class PreProcessParser(object):
         self.drop_meta = drop_meta
 
     def __call__(self, meta):
-        question = meta['inputs']
+        question = meta.get('instruction', '') + meta.get('inputs', "") # meta['inputs']
         answer = meta.get('outputs', "")
         tokenized_question = self.tokenizer(question, return_attention_mask=False)['input_ids']
         tokenized_answer = self.tokenizer(answer, return_attention_mask=False, add_special_tokens=False)['input_ids']

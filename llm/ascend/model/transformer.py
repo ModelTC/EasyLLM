@@ -383,7 +383,6 @@ class CoreAttention(MegatronModule):
             #                                       attention_mask)
             query_layer, key_layer, value_layer = [rearrange(x, 's b ... -> b s ...').contiguous() for x in (query_layer, key_layer, value_layer)] # noqa
             qk_mask, cu_seqlens = None, None
-            import pdb;pdb.set_trace()
             context_layer = self.core_flash_attn(query_layer, key_layer, value_layer, qk_mask, cu_seqlens)
             context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
         else:
@@ -1131,7 +1130,6 @@ class ParallelTransformerLayer(MegatronModule):
         # hidden_states: [s, b, h]
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
-        import pdb;pdb.set_trace()
         # Self attention.
         attention_output, attention_bias = \
             self.self_attention(layernorm_output,
