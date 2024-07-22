@@ -14,7 +14,11 @@
 # limitations under the License.
 
 """Transformer."""
-from .transformer_engine import TEDotProductAttention
+try:
+    from .transformer_engine import TEDotProductAttention
+except:    # noqa
+    TEDotProductAttention = None
+
 import math
 import torch
 import torch.nn as nn
@@ -451,13 +455,17 @@ class ParallelAttention(MegatronModule):
                 **position_embedding_kwargs or {},
             )
 
-        self.te_core_attention = TEDotProductAttention(
-            config=transformer_engine_config,
-            layer_number=te_layer_number,
-            attn_mask_type=AttnMaskType(self.attn_mask_type),
-            attention_type=te_attention_type,
-            attention_dropout=te_attention_dropout
-        )
+        if TEDotProductAttention is not None:
+            self.te_core_attention = TEDotProductAttention(
+                config=transformer_engine_config,
+                layer_number=te_layer_number,
+                attn_mask_type=AttnMaskType(self.attn_mask_type),
+                attention_type=te_attention_type,
+                attention_dropout=te_attention_dropout
+            )
+        else:
+            assert dist_env.get_context_parallel_world_size() == 1, "context_parallel_size must be 1!"  # noqa
+            self.te_attention_dropout = None
 
     def forward(self,
                 hidden_states,
