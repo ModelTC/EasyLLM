@@ -42,10 +42,29 @@ from llm.plugins.internvl.data.data_utils import (
 from llm.runners.hf_runner import HFRunner
 
 
-class SpeedTestRunner(HFRunner):
+class MLLMHFRunner(HFRunner):
     def build_env(self):
         from llm.utils.general.hf_utils import set_random_seed
         set_random_seed(self.config['runtime'].get('seed', 42))
+        deepspeed.init_distributed(dist_backend='nccl')
+        self.mpu = None
+
+        from transformers.integrations.deepspeed import HfTrainerDeepSpeedConfig
+        # self.hf_deepspeed_config = HfTrainerDeepSpeedConfig("/mnt/afs_2/zhangfeizhao/mllm/internvl/open_source/workdir_el/hf/zero_stage3_config.json")
+        self.hf_deepspeed_config = HfTrainerDeepSpeedConfig(self.config['deepspeed']['config'])
+        if self.config['deepspeed']['config']["zero_optimization"].get("mics_shard_size", None) is not None:
+            from llm.utils.env import dist_env, initialize_model_parallel, is_unitialized
+            if is_unitialized():
+                initialize_model_parallel()
+            else:
+                pass
+            self.mpu = dist_env
+
+            import transformers
+            from llm.plugins.internvl.runners.transformers_patch import from_pretrained, _from_config
+            transformers.PreTrainedModel.from_pretrained = from_pretrained
+            transformers.PreTrainedModel._from_config = _from_config
+
 
     def build(self):
         self.build_env()
@@ -97,11 +116,12 @@ class SpeedTestRunner(HFRunner):
         model.num_image_token = int((force_image_size // patch_size) ** 2 * (down_sample_ratio ** 2))
 
         num_new_tokens = self.num_new_tokens
-        if num_new_tokens > 0:
+        if num_new_tokens > 0 or model.language_model.vocab_size != len(self.tokenizer):
             model.language_model.resize_token_embeddings(len(self.tokenizer))
             output_embeddings = model.language_model.get_output_embeddings().weight.data
-            output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-            output_embeddings[-num_new_tokens:] = output_embeddings_avg
+            if num_new_tokens > 0:
+                output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+                output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
             model.config.llm_config.vocab_size = len(self.tokenizer)
             model.language_model.config.vocab_size = len(self.tokenizer)
@@ -126,11 +146,15 @@ class SpeedTestRunner(HFRunner):
             model.language_model = model.language_model.eval()
             _freeze_params(model.language_model)
         if self.config['runtime'].get('unfreeze_lm_head', False):
-            model.language_model.lm_head.requires_grad = True
+            try:
+                model.language_model.lm_head.requires_grad = True
+            except Exception as e:
+                model.language_model.output.requires_grad = True
         if self.config['runtime'].get('freeze_mlp', False):
             _freeze_params(model.mlp1)
 
         self.model = model
+        torch.cuda.empty_cache()
         if not self.deepspeed:
             self.mdoel = self.model.cuda()
             if self.training:
@@ -180,6 +204,7 @@ class SpeedTestRunner(HFRunner):
             lr_scheduler=self.lr_scheduler,
             config=self.config['deepspeed']['config'],
             args=None,
+            mpu=self.mpu
         )
         self.model = model
         self.optimizer = optimizer
@@ -263,6 +288,7 @@ class SpeedTestRunner(HFRunner):
             self.start_iter * self.gradient_accumulation_steps,
             self.train_iters * self.gradient_accumulation_steps,
         ):
+            torch.cuda.empty_cache()
             self.cur_iter = iteration // self.gradient_accumulation_steps
             batch = self.get_batch()
             self._hooks('before_train_iter', self.cur_iter, batch)
@@ -285,6 +311,7 @@ class SpeedTestRunner(HFRunner):
                                         image_flags=batch['image_flags'],
                                         return_dict=True,
                                         use_cache=False)
+
             losses = [val for name, val in output.items() if name.find('loss') >= 0]
             loss = sum(losses)
             if self.deepspeed:
@@ -299,7 +326,11 @@ class SpeedTestRunner(HFRunner):
             if (iteration + 1) % self.gradient_accumulation_steps == 0:
                 self._save(self.cur_iter)
                 self._hooks('after_train_iter', self.cur_iter, output)
-        save_hf_checkpoint(self, self.config['saver'], self.train_iters)
+        if self.config['deepspeed']['config']["zero_optimization"]["stage"] == 3:
+            state_dict = self.model._zero3_consolidated_16bit_state_dict()
+            save_hf_checkpoint(self, self.config['saver'], self.train_iters, state_dict=state_dict)
+        else:
+            save_hf_checkpoint(self, self.config['saver'], self.train_iters)
         self._hooks('after_train')
 
     def infer(self):
@@ -348,10 +379,10 @@ def main(args):
     cfg = load_yaml(args.config)
     cfg['runtime'] = cfg.setdefault('runtime', {})
     if not args.inference:
-        runner = SpeedTestRunner(args, cfg, training=True)
+        runner = MLLMHFRunner(args, cfg, training=True)
         runner.train()
     else:
-        runner = SpeedTestRunner(args, cfg, training=False)
+        runner = MLLMHFRunner(args, cfg, training=False)
         runner.infer()
 
 

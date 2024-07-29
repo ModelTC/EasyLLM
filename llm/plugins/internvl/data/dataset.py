@@ -96,8 +96,11 @@ class InternvlToolsDataset(Dataset):
                                 meta["img_dir"] = img_dir
                                 meta["data_augment"] = data_augment
                             metas.append(meta)
+                            # if i > 20000:
+                            #     break
                             if ((i + 1) % 1000 == 0):
                                 logger.info('{} items of data have been loaded'.format(i + 1))
+                # break
         self.lengths = lengths
         return metas
 
@@ -162,7 +165,8 @@ class InternPackedDataset(Dataset):
                  patch_size=14,
                  down_sample_ratio=0.5,
                  iter_time=100,
-                 llm_thresh={}):
+                 llm_thresh={},
+                 mutil_group=False):
         self.force_image_size = force_image_size
         self.patch_size = patch_size
         self.down_sample_ratio = down_sample_ratio
@@ -179,32 +183,54 @@ class InternPackedDataset(Dataset):
         self.ignore_idx = ignore_idx
         self.epoch = epoch
         self.iter_time = iter_time
+        self.mutil_group = mutil_group
 
         os.makedirs(cache_dir, exist_ok=True)
-        logger.info("Begin preprocess dataset")
+        print("Begin preprocess dataset", flush=True)
         # self.preprocess()
         self.preprocess_single()
-        logger.info("Preprocess dataset successed")
+        print("Preprocess dataset successed", flush=True)
         self.seed = DEFAULT_SEED
         self.pack_groups = self.get_packed_groups()
 
     def preprocess_single(self):
-        dict_num_tokens = {}
-        json_file_list = self.dataset.json_file
-        if not isinstance(json_file_list, list):
-            json_file_list = [json_file_list]
-        idx = 0
-        for json_file in json_file_list:
-            meta_info = json.loads(open(json_file).read())
-            for data_name in meta_info.keys():
-                with open(meta_info[data_name]["token_lengths"], "r") as f:
-                    token_lengths = json.load(f)
-                dict_num_tokens[idx] = {
-                    "lengths": len(self.dataset),
-                    "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
-                }
-                idx += 1
-        self.dict_num_tokens = dict_num_tokens
+        if self.mutil_group:
+            dict_num_tokens = []
+            json_file_list = self.dataset.json_file
+            if not isinstance(json_file_list, list):
+                json_file_list = [json_file_list]
+
+            for json_file in json_file_list:
+                idx = 0
+                meta_info = json.loads(open(json_file).read())
+                dict_num_tokens_ = {}
+                for data_name in meta_info.keys():
+                    with open(meta_info[data_name]["token_lengths"], "r") as f:
+                        token_lengths = json.load(f)
+                    dict_num_tokens_[idx] = {
+                        "lengths": len(self.dataset),
+                        "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
+                    }
+                    idx += 1
+                dict_num_tokens.append(dict_num_tokens_)
+            self.dict_num_tokens = dict_num_tokens
+        else:
+            dict_num_tokens = {}
+            json_file_list = self.dataset.json_file
+            if not isinstance(json_file_list, list):
+                json_file_list = [json_file_list]
+            idx = 0
+            for json_file in json_file_list:
+                meta_info = json.loads(open(json_file).read())
+                for data_name in meta_info.keys():
+                    with open(meta_info[data_name]["token_lengths"], "r") as f:
+                        token_lengths = json.load(f)
+                    dict_num_tokens[idx] = {
+                        "lengths": len(self.dataset),
+                        "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
+                    }
+                    idx += 1
+            self.dict_num_tokens = dict_num_tokens
 
     def preprocess(self):
         assert self.dataset_cfg["type"] == "internvl", "sub dataset type is not internvl."
@@ -214,7 +240,7 @@ class InternPackedDataset(Dataset):
         for idx in range(num_datasets):
             sub_dataset = self.dataset.datasets[idx]
             if "token_lengths" in sub_dataset.meta:
-                logger.info(f"Load from cache for dataset {idx}")
+                print(f"Load from cache for dataset {idx}", flush=True)
                 assert os.path.exists(sub_dataset.meta["token_lengths"]), f"Dataset {idx} token_lengths file does not exist."
                 with open(sub_dataset.meta["token_lengths"], "r") as f:
                     token_lengths = json.load(f)
@@ -223,7 +249,7 @@ class InternPackedDataset(Dataset):
                     "token_lengths": token_lengths  # sub_dataset.meta["token_lengths"]
                 }
             else:
-                logger.info(f"Generate length json for dataset {idx}")
+                print(f"Generate length json for dataset {idx}", flush=True)
                 token_lengths = []
                 origin_indexs = list(range(len(sub_dataset)))
                 token_lengths_dict = dict()
@@ -281,9 +307,9 @@ class InternPackedDataset(Dataset):
         new_groups = []
         for idx, item in enumerate(groups):
             if item["vit_num"] == -1:
-                logger.info(f"item {idx} was filted.")
+                print(f"item {idx} was filted.", flush=True)
                 continue
-            new_groups.append((idx + accu_length, item['vit_num'], item['token_num']))
+            new_groups.append((idx + accu_length, item['image_flags'], item['token_num']))
         return new_groups
 
     def iter_random_groups(self, groups, llm_thresh=None, seed=None, iter_time=300):
@@ -296,7 +322,7 @@ class InternPackedDataset(Dataset):
             return groups
         output = []
         for i in range(iter_time - 1):
-            logger.info(f"iter_random_groups {i} / {iter_time - 1}")
+            print(f"iter_random_groups {i} / {iter_time - 1}", flush=True)
             need_process_groups = []
             for g in groups:
                 vit_num = get_vit_num(g)
@@ -351,7 +377,7 @@ class InternPackedDataset(Dataset):
         best_llm_thresh = 0
         llm_thresh = self.llm_packed_length
         for step_id in range(step_num):
-            logger.info(f"find_best_groups {step_id} / {step_num}")
+            print(f"find_best_groups {step_id} / {step_num}", flush=True)
             groups = self.iter_random_groups(input_groups, llm_thresh, seed=self.seed, iter_time=self.iter_time)
             cur_info_dict = self.collect_packed_info(groups)
             if cur_info_dict['packed_group_num'] < best_group_num:
@@ -360,28 +386,53 @@ class InternPackedDataset(Dataset):
                 best_info_dict = cur_info_dict
                 best_llm_thresh = llm_thresh
             llm_thresh -= step
-        print(f"llm thresh {best_llm_thresh} best info dict", best_info_dict)
+        print(f"llm thresh {best_llm_thresh} best info dict", best_info_dict, flush=True)
         return best_groups
 
     def get_packed_groups(self):
         # num_datasets = len(self.dataset.datasets)
-        num_datasets = len(list(self.dict_num_tokens.keys()))
-        accu_length = 0
-        input_groups = []
-        for d_idx in range(num_datasets):
-            dict_item = self.dict_num_tokens[d_idx]
-            token_lengths = dict_item["token_lengths"]
-            groups = self.process_random_groups_input(token_lengths, accu_length)
-            logger.info(f"get_packed_groups {d_idx}.")
-            input_groups.extend(groups)
-            accu_length += len(token_lengths)
-        if self.llm_thresh.get('thresh', None) is not None:
-            groups = self.iter_random_groups(input_groups, llm_thresh=self.llm_thresh['thresh'], seed=self.seed, iter_time=self.iter_time)
+        if self.mutil_group:
+            accu_length = 0
+            total_group = []
+            num_samples = []
+            for dict_num_tokens in self.dict_num_tokens:
+                num_datasets = len(list(dict_num_tokens.keys()))
+                input_groups = []
+                for d_idx in range(num_datasets):
+                    dict_item = dict_num_tokens[d_idx]
+                    token_lengths = dict_item["token_lengths"]
+                    groups = self.process_random_groups_input(token_lengths, accu_length)
+                    print(f"get_packed_groups {d_idx}.", flush=True)
+                    input_groups.extend(groups)
+                    accu_length += len(token_lengths)
+                if self.llm_thresh.get('thresh', None) is not None:
+                    groups = self.iter_random_groups(input_groups, llm_thresh=self.llm_thresh['thresh'], seed=self.seed, iter_time=self.iter_time)
+                else:
+                    groups = self.find_best_groups(input_groups, self.llm_thresh.get('step', 4), self.llm_thresh.get('step_num', 10))
+                print(self.collect_packed_info(groups), flush=True)
+                num_samples.append(len(groups))
+                total_group.extend(groups)
+            print("get_packed_groups done!", flush=True)
+            self.num_samples = num_samples
+            return total_group
         else:
-            groups = self.find_best_groups(input_groups, self.llm_thresh.get('step', 4), self.llm_thresh.get('step_num', 10))
-        print(self.collect_packed_info(groups), flush=True)
-        logger.info("get_packed_groups done!")
-        return groups
+            num_datasets = len(list(self.dict_num_tokens.keys()))
+            accu_length = 0
+            input_groups = []
+            for d_idx in range(num_datasets):
+                dict_item = self.dict_num_tokens[d_idx]
+                token_lengths = dict_item["token_lengths"]
+                groups = self.process_random_groups_input(token_lengths, accu_length)
+                print(f"get_packed_groups {d_idx}.", flush=True)
+                input_groups.extend(groups)
+                accu_length += len(token_lengths)
+            if self.llm_thresh.get('thresh', None) is not None:
+                groups = self.iter_random_groups(input_groups, llm_thresh=self.llm_thresh['thresh'], seed=self.seed, iter_time=self.iter_time)
+            else:
+                groups = self.find_best_groups(input_groups, self.llm_thresh.get('step', 4), self.llm_thresh.get('step_num', 10))
+            print(self.collect_packed_info(groups), flush=True)
+            print("get_packed_groups done!", flush=True)
+            return groups
 
     def __getitem__(self, item: int):
         item = item % len(self.pack_groups)
@@ -396,8 +447,9 @@ class InternPackedDataset(Dataset):
                 for g in groups:
                     idx, num_patches, llm_length = g
                     meta = self.dataset.__getitem__(idx)
+#                    print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
                     assert len(meta["input_ids"]) == llm_length
-                    assert meta["pixel_values"].size(0) == num_patches
+                    assert meta["image_flags"].sum() == num_patches
                     input_ids.append(meta['input_ids'])
                     pixel_values.append(meta['pixel_values'])
                     labels.append(meta['labels'])
@@ -407,11 +459,22 @@ class InternPackedDataset(Dataset):
 
                 cu_seqlens = np.cumsum(np.array(cu_seqlens)).tolist()
                 input_ids = torch.cat(input_ids)[:self.llm_packed_length]
-                pixel_values = torch.cat(pixel_values)[:self.vit_packed_length]
+                pixel_values = torch.cat(pixel_values)# [:self.vit_packed_length]
                 labels = torch.cat(labels)[:self.llm_packed_length]
                 cu_seqlens = torch.clamp(torch.LongTensor(cu_seqlens), max=self.llm_packed_length)
                 position_ids = torch.LongTensor(position_ids)[:self.llm_packed_length]
                 image_flags = torch.cat(image_flags)
+
+                if image_flags.sum() == 0:
+                    # for no img
+                    # pixel_values = pixel_values[0].unsqueeze(0).resize_(1, 3, 56, 56)
+                    pixel_values = pixel_values[0].unsqueeze(0)
+                    image_flags = torch.tensor([0], dtype=torch.long)
+                else:
+                    pixel_values = pixel_values[image_flags.view(-1)==1]
+                    image_flags = image_flags[image_flags.view(-1)==1]
+              #  image_flags = image_flags[image_flags.view(-1)==1]
+              #  pixel_values = pixel_values[image_flags.view(-1)==1]
                 if len(image_flags) == 0:  # pure llm text
                     image_flags = torch.tensor([0], dtype=torch.long)
 
@@ -425,7 +488,7 @@ class InternPackedDataset(Dataset):
                 }
                 break
             except Exception as e:
-                logger.info(f"{e}")
+                print(f"{e}", flush=True)
                 # i = random.randint(0, len(self.raw_data) - 1)
                 item = (item + 100) % len(self.pack_groups)
         return ret

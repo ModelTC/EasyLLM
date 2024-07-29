@@ -167,10 +167,9 @@ class InternVLChatModel(PreTrainedModel):
         image_flags = image_flags.squeeze(-1)
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
 
+        # if image_flags.sum() != 0:
         vit_embeds = self.extract_feature(pixel_values)
         vit_embeds = vit_embeds[image_flags == 1]
-        # vit_batch_size = pixel_values.shape[0]
-
         B, N, C = input_embeds.shape
         input_embeds = input_embeds.reshape(B * N, C)
 
@@ -182,12 +181,17 @@ class InternVLChatModel(PreTrainedModel):
         except Exception as e:
             vit_embeds = vit_embeds.reshape(-1, C)
             print(f'warning: {e}, input_embeds[selected].shape={input_embeds[selected].shape}, '
-                  f'vit_embeds.shape={vit_embeds.shape}')
+                    f'vit_embeds.shape={vit_embeds.shape}')
             n_token = min(selected.sum(), vit_embeds.shape[0])
             selected = selected[:n_token]
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds[:n_token]
 
         input_embeds = input_embeds.reshape(B, N, C)
+        # else:
+        #     vit_embeds = self.extract_feature(pixel_values, no_img=True)
+        #     temp = input_embeds.clone()
+        #     temp += vit_embeds
+        #     input_embeds = temp
 
         outputs = self.language_model(
             inputs_embeds=input_embeds,

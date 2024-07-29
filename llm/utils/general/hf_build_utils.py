@@ -99,15 +99,22 @@ def build_sampler(cfg_sampler, dataset):
 
 
 def build_batch_sampler(cfg_batch_sampler, dataset):
-    cfg_batch_sampler = copy.deepcopy(cfg_batch_sampler)
-    cfg_sampler = cfg_batch_sampler['kwargs']['sampler']
-    sampler = build_sampler(cfg_sampler, dataset)
-    cfg_batch_sampler['kwargs']['sampler'] = sampler
-    batch_sampler = BATCH_SAMPLER_REGISTRY.build(cfg_batch_sampler)
-    infinite = cfg_batch_sampler.pop('infinite', True)
-    if infinite:
-        batch_sampler = InfiniteBatchSampler(batch_sampler)
-    return batch_sampler
+    if cfg_batch_sampler["type"] == "group_random":
+        cfg_batch_sampler['kwargs']['data_parallel_rank'] = get_rank()
+        cfg_batch_sampler['kwargs']['data_parallel_size'] = get_world_size()
+        cfg_batch_sampler['kwargs']['total_samples'] = dataset.num_samples
+        batch_sampler = BATCH_SAMPLER_REGISTRY.build(cfg_batch_sampler)
+        return batch_sampler
+    else:
+        cfg_batch_sampler = copy.deepcopy(cfg_batch_sampler)
+        cfg_sampler = cfg_batch_sampler['kwargs']['sampler']
+        sampler = build_sampler(cfg_sampler, dataset)
+        cfg_batch_sampler['kwargs']['sampler'] = sampler
+        batch_sampler = BATCH_SAMPLER_REGISTRY.build(cfg_batch_sampler)
+        infinite = cfg_batch_sampler.pop('infinite', True)
+        if infinite:
+            batch_sampler = InfiniteBatchSampler(batch_sampler)
+        return batch_sampler
 
 
 def build_dataloader(cfg_data, dataset, batch_collator):

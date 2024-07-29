@@ -243,7 +243,7 @@ class InternVisionEncoderLayer(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        hidden_states: torch.Tensor
     ) -> Tuple[torch.FloatTensor, Optional[torch.FloatTensor], Optional[Tuple[torch.FloatTensor]]]:
         """
         Args:
@@ -281,6 +281,7 @@ class InternVisionEncoder(nn.Module):
             inputs_embeds,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            no_img = False
     ) -> Union[Tuple, BaseModelOutput]:
         r"""
         Args:
@@ -309,7 +310,7 @@ class InternVisionEncoder(nn.Module):
                     hidden_states)
             else:
                 layer_outputs = encoder_layer(
-                    hidden_states,
+                    hidden_states
                 )
             hidden_states = layer_outputs
 
@@ -355,6 +356,7 @@ class InternVisionModel(PreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
             pixel_embeds: Optional[torch.FloatTensor] = None,
+            no_img = False
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -371,6 +373,7 @@ class InternVisionModel(PreTrainedModel):
                 hidden_states = self.embeddings(pixel_values)
             else:
                 raise ValueError(f'wrong pixel_values size: {pixel_values.shape}')
+
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
             output_hidden_states=output_hidden_states,

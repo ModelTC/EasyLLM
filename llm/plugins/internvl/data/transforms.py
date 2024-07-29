@@ -364,7 +364,10 @@ class InternvlToolParser(object):
                     labels.extend([self.ignore_index] * len(tokens_assistant_start))
                     assis_info = ""
                     if item['content']:
-                        assis_info = item['content']
+                        if isinstance(item['content'], dict):
+                            assis_info = json.dumps(item['content'], ensure_ascii=False)
+                        else:
+                            assis_info = item['content']
 
                     if 'tool_calls' in item and len(item['tool_calls']) > 0:
                         assis_info += self.action_start
@@ -788,7 +791,10 @@ class LlamavlToolParser(object):
                     labels.extend([self.ignore_index] * len(tokens_assistant_start))
                     assis_info = ""
                     if item['content']:
-                        assis_info = item['content'].strip()
+                        if isinstance(item['content'], dict):
+                            assis_info = json.dumps(item['content'], ensure_ascii=False)
+                        else:
+                            assis_info = item['content']
 
                     if 'tool_calls' in item and len(item['tool_calls']) > 0:
                         assis_info += self.action_start
