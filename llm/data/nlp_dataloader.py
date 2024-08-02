@@ -13,6 +13,7 @@ from llm.utils.env import dist_env
 from llm.utils.general.registry_factory import BATCH_COLLECTOR_REGISTRY, DATALOADER_REGISTRY
 from .nlp_dataset import build_dataset
 from .nlp_sampler import build_batch_sampler, InfiniteBatchSampler
+from llm.models.hf_models.sequence import get_sequence_parallel_world_size
 
 
 @dataclass
@@ -120,6 +121,7 @@ class BatchAlignCollector(BatchCollector):
                  test_speed=False,
                  pretrain=False):
         super().__init__(tokenizer, ignore_idx)
+        alignment = math.lcm(get_sequence_parallel_world_size(), alignment)
         self.alignment = alignment
         self.max_seq_length = max_seq_length
         self.pad_token_id = len(self.tokenizer) - 1

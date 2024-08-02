@@ -15,7 +15,9 @@ from llm.utils.general.registry_factory import (
     SAMPLER_REGISTRY,
     BATCH_SAMPLER_REGISTRY,
     AUGMENTATION_REGISTRY)
-
+from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
+                                           get_data_parallel_world_size,
+                                           get_data_parallel_rank)
 
 def build_model(model_cfg):
     fast_device = torch.device('cuda')
@@ -91,8 +93,12 @@ def build_sampler(cfg_sampler, dataset):
     if 'kwargs' not in cfg_sampler:
         cfg_sampler['kwargs'] = {}
     cfg_sampler['kwargs']['dataset_size'] = len(dataset)
-    cfg_sampler['kwargs']['data_parallel_rank'] = get_rank()
-    cfg_sampler['kwargs']['data_parallel_size'] = get_world_size()
+    if get_sequence_parallel_world_size() > 1:
+        cfg_sampler['kwargs']['data_parallel_rank'] = get_data_parallel_rank()
+        cfg_sampler['kwargs']['data_parallel_size'] = get_data_parallel_world_size()
+    else:
+        cfg_sampler['kwargs']['data_parallel_rank'] = get_rank()
+        cfg_sampler['kwargs']['data_parallel_size'] = get_world_size()
     if cfg_sampler["type"] == "dist_length_group":
         cfg_sampler["kwargs"]["dataset"] = dataset
     return SAMPLER_REGISTRY.build(cfg_sampler)

@@ -21,6 +21,11 @@ from .modeling_intern_vit import InternVisionModel
 from .modeling_eva_vit import EvaCLIPVisionModel
 # from ...datas.conversation import get_conv_template
 
+from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
+                                           reduce_sequence_parallel_loss,
+                                           get_sequence_parallel_group)
+
+
 logger = logging.get_logger(__name__)
 
 
@@ -218,6 +223,11 @@ class InternVLChatModel(PreTrainedModel):
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
+
+            if get_sequence_parallel_world_size() > 1:
+                sp_group = get_sequence_parallel_group()
+                num_tokens = (shift_labels != -100).sum()
+                loss = reduce_sequence_parallel_loss(loss, num_tokens, sp_group)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

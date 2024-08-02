@@ -5,6 +5,7 @@ import torch
 from dataclasses import dataclass
 from llm.utils.general.registry_factory import BATCH_COLLECTOR_REGISTRY
 from llm.data.nlp_dataloader import BatchAlignCollector
+from llm.models.hf_models.sequence import get_sequence_parallel_world_size
 
 
 IGNORE_INDEX = -100
@@ -14,6 +15,7 @@ IGNORE_INDEX = -100
 @BATCH_COLLECTOR_REGISTRY.register('internvl')
 class InternvlCollector(BatchAlignCollector):
     def __init__(self, tokenizer, alignment=1, offset_label=True):
+        alignment = math.lcm(get_sequence_parallel_world_size(), alignment)
         super().__init__(tokenizer, alignment=alignment, offset_label=offset_label)
 
     def __call__(self, instances, pad_id=0):

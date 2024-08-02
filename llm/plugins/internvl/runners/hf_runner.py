@@ -40,6 +40,9 @@ from llm.plugins.internvl.data.data_utils import (
     QUAD_END_TOKEN
 )
 from llm.runners.hf_runner import HFRunner
+from llm.models.hf_models.sequence import (init_sequence_parallel,
+                                           get_sequence_parallel_group,
+                                           split_for_sequence_parallel)
 
 
 class MLLMHFRunner(HFRunner):
@@ -64,6 +67,9 @@ class MLLMHFRunner(HFRunner):
             from llm.plugins.internvl.runners.transformers_patch import from_pretrained, _from_config
             transformers.PreTrainedModel.from_pretrained = from_pretrained
             transformers.PreTrainedModel._from_config = _from_config
+
+        sequence_parallel_world_size = self.config['runtime'].get('sp', 1)
+        init_sequence_parallel(sequence_parallel_world_size)
 
 
     def build(self):
@@ -275,6 +281,11 @@ class MLLMHFRunner(HFRunner):
             batch["position_ids"] = None
         if "cu_seqlens" not in batch:
             batch["cu_seqlens"] = None
+
+        sp_group = get_sequence_parallel_group()
+        for key in batch.keys():
+            if key in ('input_ids', 'labels', 'position_ids') and batch[key] is not None:
+                batch[key] = split_for_sequence_parallel(batch[key], dim=1, sp_group=sp_group)
         return batch
 
     def _save(self, iteration):

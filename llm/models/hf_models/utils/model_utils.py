@@ -51,7 +51,6 @@ def get_model_cfg(cfg):
         "revision": config_kwargs["revision"],
         "use_auth_token": True if config_kwargs["use_auth_token"] else False,
         "torch_dtype": torch_dtype,
-        "low_cpu_mem_usage": True
     }
 
     if cfg.get("model_parallel", False):
