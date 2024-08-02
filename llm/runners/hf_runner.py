@@ -278,6 +278,7 @@ class HFRunner(object):
                     output = self.model(batch['input_ids'],
                                         batch['attention_mask'],
                                         labels=batch['labels'],
+                                        position_ids=batch.get("position_ids", None),
                                         return_dict=True,
                                         use_cache=False)
             losses = [val for name, val in output.items() if name.find('loss') >= 0]

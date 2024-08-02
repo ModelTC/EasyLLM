@@ -1165,7 +1165,8 @@ class SimpleChatParser(object):
             labels = input_ids.clone()
         else:
             labels = torch.LongTensor(labels)
-        results = {'input_ids': input_ids, 'labels': labels}
+        position_ids = torch.LongTensor(list(range(len(input_ids))))
+        results = {'input_ids': input_ids, 'labels': labels, 'position_ids': position_ids}
         return results
 
 

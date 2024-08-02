@@ -571,7 +571,8 @@ class LlamaFlashAttention2(LlamaAttention):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        scale = get_sequence_parallel_world_size()
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len*scale)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -650,7 +651,7 @@ class LlamaFlashAttention2(LlamaAttention):
         """
         # Contains at least one padding token in the sequence
         causal = self.is_causal and query_length != 1
-        if cu_seqlens is not None:
+        if cu_seqlens is not None and cu_seqlens.sum() != -1:
             # cu_seqlens = torch.cumsum(cu_seqlens)
             cu_seqlens = cu_seqlens.to(query_states.device).to(torch.int32).view(-1)
             cu_seqlens_offset = torch.zeros_like(cu_seqlens)
@@ -903,7 +904,6 @@ class LlamaDecoderLayer(nn.Module):
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
             )
-
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -920,7 +920,6 @@ class LlamaDecoderLayer(nn.Module):
             **kwargs,
         )
         hidden_states = residual + hidden_states
-
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)

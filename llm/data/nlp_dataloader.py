@@ -121,34 +121,39 @@ class BatchAlignCollector(BatchCollector):
                  test_speed=False,
                  pretrain=False):
         super().__init__(tokenizer, ignore_idx)
-        alignment = math.lcm(get_sequence_parallel_world_size(), alignment)
         self.alignment = alignment
         self.max_seq_length = max_seq_length
         self.pad_token_id = len(self.tokenizer) - 1
         self.offset_label = offset_label
         self.test_speed = test_speed
         self.pretrain = pretrain
-        if pretrain:
-            self.data_keys = ["input_ids", "labels", "cu_seqlens", "position_ids"]
-        else:
-            self.data_keys = ["input_ids", "labels"]
+        self.data_keys = ["input_ids", "labels"]
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         if 'cu_seqlens' in instances[0]:
             self.pretrain = True
             self.data_keys = ["input_ids", "labels", "cu_seqlens", "position_ids"]
+        else:
+            self.pretrain = False
+            if "position_ids" in instances[0]:
+                self.data_keys.append("position_ids")
         item = tuple([instance[key] for instance in instances] for key in self.data_keys)  # noqa
         input_ids, labels = item[:2]
         if self.pretrain:
             cu_seqlens, position_ids = item[2:]
             input_ids, labels, cu_seqlens, position_ids = self._pad_func(input_ids, labels, cu_seqlens, position_ids)
         else:
+            if "position_ids" in self.data_keys:
+                position_ids = self._pad_with_alignment(item[2], padding_value=0)
+            else:
+                position_ids = [torch.LongTensor(list(range(len(_)))) for _ in input_ids]
+                position_ids = self._pad_with_alignment(position_ids, padding_value=0)
             input_ids, labels = self._pad_func(input_ids, labels)
+            cu_seqlens = torch.FloatTensor([-1]).long()
         data = dict(input_ids=input_ids,
                     labels=labels,
                     attention_mask=input_ids.ne(self.pad_token_id))
-        if self.pretrain:
-            data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
+        data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
         return data
 
     def _pad_with_alignment(self, input, padding_value=0, is_label=False):
