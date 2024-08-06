@@ -489,6 +489,97 @@ class NoPadLengthGroupSampler:
                 batch = []
 
 
+# @BATCH_SAMPLER_REGISTRY.register('group_random')
+# class GroupRandomBatchSamper:
+#     def __init__(self,
+#                  total_samples,
+#                  consumed_samples,
+#                  micro_batch_size,
+#                  data_parallel_rank,
+#                  data_parallel_size):
+#         if isinstance(total_samples, list):
+#             self.total_samples_list = total_samples
+#             self.total_samples = sum(self.total_samples_list)
+#         else:
+#             self.total_samples_list = [total_samples]
+#             self.total_samples = total_samples
+#         self.consumed_samples = consumed_samples
+#         self.micro_batch_size = micro_batch_size
+#         self.batch_size = micro_batch_size
+#         self.data_parallel_rank = data_parallel_rank
+#         self.data_parallel_size = data_parallel_size
+#         self.micro_batch_times_data_parallel_size = self.micro_batch_size * data_parallel_size
+#         self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
+#         self.consumed_iter = self.consumed_samples // self.micro_batch_times_data_parallel_size
+#         self.epoch = 0
+
+#         assert self.micro_batch_size > 0
+#         assert data_parallel_size > 0
+#         assert self.data_parallel_rank < data_parallel_size, \
+#             'data_parallel_rank should be smaller than data size: {}, ' \
+#             '{}'.format(self.data_parallel_rank, data_parallel_size)
+#         self.generate_indices()
+#         self.indices = self.indices[self.consumed_samples:]
+
+#     def __len__(self):
+#         return self.total_length // self.data_parallel_size
+    
+#     def set_epoch(self, epoch):
+#         self.epoch = epoch
+#         self.generate_indices()
+    
+#     def _generate_indices(self, samples, accu_length):
+#         g = torch.Generator()
+#         g.manual_seed(self.epoch)
+#         random_idx = torch.randperm(samples, generator=g).tolist()
+#         # random_idx = list(range(samples))
+#         random_idx = [item + accu_length for item in random_idx]
+
+#         align_length = int(math.ceil(samples * 1.0 / (self.micro_batch_size * self.data_parallel_size))) * self.micro_batch_size * self.data_parallel_size
+#         padding_size = align_length - samples
+#         if padding_size <= len(random_idx):
+#             random_idx += random_idx[:padding_size]
+#         else:
+#             random_idx += (random_idx * math.ceil(padding_size / len(random_idx)))[:padding_size]
+#         assert len(random_idx) == align_length
+#         t_size = len(random_idx) // self.micro_batch_times_data_parallel_size
+#         indices_group = []
+#         for i in range(t_size):
+#             indices_group.append(random_idx[i * self.micro_batch_times_data_parallel_size:(i + 1) * self.micro_batch_times_data_parallel_size])
+#         return indices_group
+    
+#     def generate_indices(self):
+#         self.indices_group = []
+#         accu_length = [0]
+#         self.indices = []
+
+#         for i in self.total_samples_list:
+#             accu_length.append(i+accu_length[-1])
+#         for idx, samples in enumerate(self.total_samples_list):
+#             self.indices_group.extend(self._generate_indices(samples, accu_length=accu_length[idx]))
+#         g = torch.Generator()
+#         g.manual_seed(self.epoch + 10)
+#         random_idx = torch.randperm(len(self.indices_group), generator=g).tolist()
+#         for idx in random_idx:
+#             self.indices.extend(self.indices_group[idx])
+#         self.total_length = len(self.indices)
+
+#     def __iter__(self):
+#         batch = []
+#         self.epoch = self.consumed_samples // (self.total_length * self.micro_batch_times_data_parallel_size)
+#         if self.consumed_samples % self.total_length == 0 and self.consumed_samples > 0:
+#             self.generate_indices()
+
+#         sort_indices = []
+#         # for rank in range(self.data_parallel_size)
+#         for idx in self.indices[self.data_parallel_rank::self.data_parallel_size]:
+#             batch.append(idx)
+#             if len(batch) == self.micro_batch_size:
+#                 self.consumed_samples += self.micro_batch_times_data_parallel_size
+#                 yield batch
+#                 batch = []
+
+
 @BATCH_SAMPLER_REGISTRY.register('group_random')
 class GroupRandomBatchSamper:
     def __init__(self,
@@ -496,7 +587,9 @@ class GroupRandomBatchSamper:
                  consumed_samples,
                  micro_batch_size,
                  data_parallel_rank,
-                 data_parallel_size):
+                 data_parallel_size,
+                 lengths=None,
+                 bin_size=512):
         if isinstance(total_samples, list):
             self.total_samples_list = total_samples
             self.total_samples = sum(self.total_samples_list)
@@ -505,13 +598,15 @@ class GroupRandomBatchSamper:
             self.total_samples = total_samples
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
-        self.batch_size = micro_batch_size
         self.data_parallel_rank = data_parallel_rank
         self.data_parallel_size = data_parallel_size
         self.micro_batch_times_data_parallel_size = self.micro_batch_size * data_parallel_size
         self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
         self.consumed_iter = self.consumed_samples // self.micro_batch_times_data_parallel_size
         self.epoch = 0
+        self.text_lengths = lengths
+        self.bin_size = bin_size
+        self.batch_size = micro_batch_size
 
         assert self.micro_batch_size > 0
         assert data_parallel_size > 0
@@ -520,14 +615,35 @@ class GroupRandomBatchSamper:
             '{}'.format(self.data_parallel_rank, data_parallel_size)
         self.generate_indices()
         self.indices = self.indices[self.consumed_samples:]
+        self.indices = self.build_balanced_indices()
+        self.total_length = len(self.indices)
+
+    def build_balanced_indices(self):
+        bin_size_group = self.build_bin_size_group()
+        sorted_keys = sorted(list(bin_size_group.keys()), reverse=True)
+        new_indices = []
+        for k in sorted_keys:
+            new_indices.extend(bin_size_group[k])
+        return new_indices
+
+    def build_bin_size_group(self):
+        bin_size_group = {}
+        bin_size = self.bin_size
+        for idx in self.indices:
+            length = self.text_lengths[idx]
+            if (length // bin_size) not in bin_size_group:
+                bin_size_group[(length // bin_size)] = []
+            bin_size_group[(length // bin_size)].append(idx)
+
+        return bin_size_group
 
     def __len__(self):
         return self.total_length // self.data_parallel_size
-    
+
     def set_epoch(self, epoch):
         self.epoch = epoch
         self.generate_indices()
-    
+
     def _generate_indices(self, samples, accu_length):
         g = torch.Generator()
         g.manual_seed(self.epoch)
@@ -547,34 +663,31 @@ class GroupRandomBatchSamper:
         for i in range(t_size):
             indices_group.append(random_idx[i * self.micro_batch_times_data_parallel_size:(i + 1) * self.micro_batch_times_data_parallel_size])
         return indices_group
-    
+
     def generate_indices(self):
         self.indices_group = []
         accu_length = [0]
         self.indices = []
-
         for i in self.total_samples_list:
-            accu_length.append(i+accu_length[-1])
+            accu_length.append(i)
         for idx, samples in enumerate(self.total_samples_list):
             self.indices_group.extend(self._generate_indices(samples, accu_length=accu_length[idx]))
+
         g = torch.Generator()
         g.manual_seed(self.epoch + 10)
         random_idx = torch.randperm(len(self.indices_group), generator=g).tolist()
         for idx in random_idx:
             self.indices.extend(self.indices_group[idx])
-        self.total_length = len(self.indices)
+
 
     def __iter__(self):
         batch = []
-        self.epoch = self.consumed_samples // (self.total_length * self.micro_batch_times_data_parallel_size)
+        self.epoch = self.consumed_samples // self.total_length
         if self.consumed_samples % self.total_length == 0 and self.consumed_samples > 0:
             self.generate_indices()
-
-        sort_indices = []
-        # for rank in range(self.data_parallel_size)
         for idx in self.indices[self.data_parallel_rank::self.data_parallel_size]:
             batch.append(idx)
             if len(batch) == self.micro_batch_size:
                 self.consumed_samples += self.micro_batch_times_data_parallel_size
                 yield batch
-                batch = []   
+                batch = []

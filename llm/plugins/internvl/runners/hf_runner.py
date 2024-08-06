@@ -282,10 +282,10 @@ class MLLMHFRunner(HFRunner):
         if "cu_seqlens" not in batch:
             batch["cu_seqlens"] = None
 
-        sp_group = get_sequence_parallel_group()
-        for key in batch.keys():
-            if key in ('input_ids', 'labels', 'position_ids') and batch[key] is not None:
-                batch[key] = split_for_sequence_parallel(batch[key], dim=1, sp_group=sp_group)
+        # sp_group = get_sequence_parallel_group()
+        # for key in batch.keys():
+        #     if key in ('input_ids', 'labels', 'position_ids') and batch[key] is not None:
+        #         batch[key] = split_for_sequence_parallel(batch[key], dim=1, sp_group=sp_group)
         return batch
 
     def _save(self, iteration):

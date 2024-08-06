@@ -74,6 +74,25 @@ from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
 
 
 @sequence_parallel_wrapper
+def flash_attn_func_seq(
+    query_states,
+    key_states,
+    value_states,
+    dropout,
+    softmax_scale,
+    causal):
+    attn_output = flash_attn_func(
+        query_states,
+        key_states,
+        value_states,
+        dropout_p=dropout,
+        softmax_scale=softmax_scale,
+        causal=causal
+    )
+    return attn_output
+
+
+@sequence_parallel_wrapper
 def flash_attn_varlen_func_seq(
     query_states,
     key_states,
@@ -545,8 +564,8 @@ class InternLM2FlashAttention2(InternLM2Attention):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        scale = get_sequence_parallel_world_size()
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len*scale)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -601,7 +620,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
         """
         # Contains at least one padding token in the sequence
         causal = self.is_causal and query_length != 1
-        if cu_seqlens is not None:
+        if cu_seqlens is not None and cu_seqlens.sum() != -1:
             # cu_seqlens = torch.cumsum(cu_seqlens)
             cu_seqlens = cu_seqlens.to(query_states.device).to(torch.int32).view(-1)
             cu_seqlens_offset = torch.zeros_like(cu_seqlens)
@@ -640,32 +659,55 @@ class InternLM2FlashAttention2(InternLM2Attention):
                     causal=True,
                 )
         elif attention_mask is not None:
-            batch_size = query_states.shape[0]
-            query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = self._unpad_input(
-                query_states, key_states, value_states, attention_mask, query_length
-            )
+            if get_sequence_parallel_world_size() > 1:
+                @sequence_parallel_wrapper
+                def flash_attn_varlen_func_seq_w(q, k, v):
+                    q, k, v, indices_q, cu_seq_lens, max_seq_lens = self._unpad_input(
+                        q, k, v, attention_mask, query_length
+                    )
+                    cu_seqlens_q, cu_seqlens_k = cu_seq_lens
+                    max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_len
+                    attn_output_unpad = flash_attn_varlen_func(
+                        q, k, v, cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
+                        max_seqlen_q=max_seqlen_in_batch_q, max_seqlen_k=max_seqlen_in_batch_k,
+                        dropout_p=dropout, softmax_scale=softmax_scale, causal=causal
+                    )
+                    attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
+                    return attn_output
 
-            cu_seqlens_q, cu_seqlens_k = cu_seq_lens
-            max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
+                attn_output = flash_attn_varlen_func_seq_w(query_states, key_states, value_states)
+            else:
+                batch_size = query_states.shape[0]
+                query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = self._unpad_input(
+                    query_states, key_states, value_states, attention_mask, query_length
+                )
 
-            attn_output_unpad = flash_attn_varlen_func(
-                query_states,
-                key_states,
-                value_states,
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_k=cu_seqlens_k,
-                max_seqlen_q=max_seqlen_in_batch_q,
-                max_seqlen_k=max_seqlen_in_batch_k,
-                dropout_p=dropout,
-                softmax_scale=softmax_scale,
-                causal=causal,
-            )
+                cu_seqlens_q, cu_seqlens_k = cu_seq_lens
+                max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
 
-            attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
+                attn_output_unpad = flash_attn_varlen_func(
+                    query_states,
+                    key_states,
+                    value_states,
+                    cu_seqlens_q=cu_seqlens_q,
+                    cu_seqlens_k=cu_seqlens_k,
+                    max_seqlen_q=max_seqlen_in_batch_q,
+                    max_seqlen_k=max_seqlen_in_batch_k,
+                    dropout_p=dropout,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                )
+
+                attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
-            attn_output = flash_attn_func(
-                query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=causal
-            )
+            if get_sequence_parallel_world_size() > 1:
+                attn_output = flash_attn_func_seq(
+                    query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=causal
+                )
+            else:
+                attn_output = flash_attn_func(
+                    query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=causal
+                )
 
         return attn_output
 
@@ -1069,7 +1111,6 @@ class InternLM2Model(InternLM2PreTrainedModel):
                 )
 
             hidden_states = layer_outputs[0]
-
             if use_cache:
                 next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
 
@@ -1198,10 +1239,7 @@ class InternLM2ForCausalLM(InternLM2PreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            if get_sequence_parallel_world_size() > 1:
-                loss_fct = CrossEntropyLoss(reduction='sum')
-            else:
-                loss_fct = CrossEntropyLoss(reduction='mean')
+            loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism

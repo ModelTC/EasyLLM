@@ -106,9 +106,15 @@ def build_sampler(cfg_sampler, dataset):
 
 def build_batch_sampler(cfg_batch_sampler, dataset):
     if cfg_batch_sampler["type"] == "group_random":
-        cfg_batch_sampler['kwargs']['data_parallel_rank'] = get_rank()
-        cfg_batch_sampler['kwargs']['data_parallel_size'] = get_world_size()
-        cfg_batch_sampler['kwargs']['total_samples'] = dataset.num_samples
+        if get_sequence_parallel_world_size() > 1:
+            cfg_batch_sampler['kwargs']['data_parallel_rank'] = get_data_parallel_rank()
+            cfg_batch_sampler['kwargs']['data_parallel_size'] = get_data_parallel_world_size()
+        else:
+            cfg_batch_sampler['kwargs']['data_parallel_rank'] = get_rank()
+            cfg_batch_sampler['kwargs']['data_parallel_size'] = get_world_size()
+        # cfg_batch_sampler['kwargs']['total_samples'] = dataset.num_samples
+        cfg_batch_sampler['kwargs']['total_samples'] = len(dataset)
+        cfg_batch_sampler['kwargs']['lengths'] = dataset.lengths
         batch_sampler = BATCH_SAMPLER_REGISTRY.build(cfg_batch_sampler)
         return batch_sampler
     else:

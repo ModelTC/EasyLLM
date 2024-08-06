@@ -197,7 +197,6 @@ class InternVLChatModel(PreTrainedModel):
         #     temp = input_embeds.clone()
         #     temp += vit_embeds
         #     input_embeds = temp
-
         outputs = self.language_model(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
