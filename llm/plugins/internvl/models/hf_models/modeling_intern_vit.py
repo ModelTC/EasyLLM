@@ -52,6 +52,7 @@ def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: b
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
+
     def __init__(self, drop_prob: float = 0., scale_by_keep: bool = True):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -250,9 +251,7 @@ class InternVisionEncoderLayer(nn.Module):
             hidden_states (`Tuple[torch.FloatTensor, Optional[torch.FloatTensor]]`): input to the layer of shape `(batch, seq_len, embed_dim)`
         """
         hidden_states = hidden_states + self.drop_path1(self.attn(self.norm1(hidden_states)) * self.ls1)
-
         hidden_states = hidden_states + self.drop_path2(self.mlp(self.norm2(hidden_states)) * self.ls2)
-
         return hidden_states
 
 
@@ -281,7 +280,7 @@ class InternVisionEncoder(nn.Module):
             inputs_embeds,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            no_img = False
+            no_img=False
     ) -> Union[Tuple, BaseModelOutput]:
         r"""
         Args:
@@ -356,7 +355,7 @@ class InternVisionModel(PreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
             pixel_embeds: Optional[torch.FloatTensor] = None,
-            no_img = False
+            no_img=False
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states

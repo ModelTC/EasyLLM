@@ -140,7 +140,7 @@ def sequence_parallel_wrapper(local_attn):
             query_states, key_states, value_states = \
                 pre_process_for_sequence_parallel_attn(
                     query_states, key_states, value_states)
- 
+
         out = local_attn(query_states, key_states, value_states, *args,
                          **kwargs)
 

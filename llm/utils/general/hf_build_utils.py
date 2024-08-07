@@ -19,6 +19,7 @@ from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
                                            get_data_parallel_world_size,
                                            get_data_parallel_rank)
 
+
 def build_model(model_cfg):
     fast_device = torch.device('cuda')
     with fast_init(fast_device):

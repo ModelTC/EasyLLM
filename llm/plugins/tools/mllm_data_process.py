@@ -1,3 +1,4 @@
+import copy
 import json
 from llm.utils.general.yaml_loader import load_yaml
 from llm.plugins.internvl.data.data_utils import (
@@ -12,12 +13,9 @@ from llm.plugins.internvl.data.data_utils import (
     QUAD_END_TOKEN
 )
 from llm.data import build_tokenizer, build_dataset
-from llm.data.nlp_dataset import build_dataset
-from multiprocessing import Manager
-import multiprocessing 
+import multiprocessing
 import argparse
 from tqdm import tqdm
-from functools import partial
 import os
 import numpy as np
 PROCESSES = 64
@@ -55,7 +53,6 @@ def decode_text(args):
     return token_lengths
 
 
-import copy
 def worker(cfg_dataset, tokenizer, ds_name, token_lengths_path, ds_info):
     dataset = build_dataset(cfg_dataset, tokenizer)
     with multiprocessing.Pool(PROCESSES) as pool:
@@ -64,11 +61,11 @@ def worker(cfg_dataset, tokenizer, ds_name, token_lengths_path, ds_info):
     for tmp in token_lengths_all:
         l_token_lengths.extend(tmp)
 
-    length_save_path = os.path.join(token_lengths_path, f"{ds_name}"+"_token_lengths.json")
+    length_save_path = os.path.join(token_lengths_path, f"{ds_name}" + "_token_lengths.json")
 
     with open(length_save_path, "w") as f:
         json.dump(l_token_lengths, f, indent=4)
-    if "max_dynamic_patch" in ds_info:    
+    if "max_dynamic_patch" in ds_info:
         info = {
             "root": ds_info["root"],
             "annotation": ds_info["annotation"],
@@ -89,7 +86,7 @@ def worker(cfg_dataset, tokenizer, ds_name, token_lengths_path, ds_info):
         }
     return info
 
-from tqdm import tqdm
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -99,7 +96,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--json_file",
         default=None,
-        help="json file to statistics" 
+        help="json file to statistics"
     )
     parser.add_argument(
         "--worker",
@@ -159,7 +156,7 @@ if __name__ == "__main__":
         ds_info["repeat_time"] = ds_collections[ds_name]['repeat_time']
         if 'max_dynamic_patch' in ds_collections[ds_name]:
             ds_info['max_dynamic_patch'] = ds_collections[ds_name]['max_dynamic_patch']
-        
+
         meta[ds_name] = worker(cfg_dataset, tokenizer, ds_name, token_lengths_path, ds_info)
 
     with open(args.output_path, "w") as f:

@@ -408,6 +408,7 @@ def build_batch_sampler(cfg_batch_sample):
             return batch_sampler
     return BATCH_SAMPLER_REGISTRY.build(cfg_batch_sample)
 
+
 @BATCH_SAMPLER_REGISTRY.register('megatron_nopad')
 class NoPadLengthGroupSampler:
     def __init__(self, total_samples, consumed_samples, micro_batch_size,
@@ -455,7 +456,6 @@ class NoPadLengthGroupSampler:
             for temp in nopad_group[item]:
                 new_indices.append(temp)
         return new_indices
-    
 
     def __len__(self):
         return self.total_samples
@@ -523,11 +523,11 @@ class NoPadLengthGroupSampler:
 
 #     def __len__(self):
 #         return self.total_length // self.data_parallel_size
-    
+
 #     def set_epoch(self, epoch):
 #         self.epoch = epoch
 #         self.generate_indices()
-    
+
 #     def _generate_indices(self, samples, accu_length):
 #         g = torch.Generator()
 #         g.manual_seed(self.epoch)
@@ -547,7 +547,7 @@ class NoPadLengthGroupSampler:
 #         for i in range(t_size):
 #             indices_group.append(random_idx[i * self.micro_batch_times_data_parallel_size:(i + 1) * self.micro_batch_times_data_parallel_size])
 #         return indices_group
-    
+
 #     def generate_indices(self):
 #         self.indices_group = []
 #         accu_length = [0]
@@ -678,7 +678,6 @@ class GroupRandomBatchSamper:
         random_idx = torch.randperm(len(self.indices_group), generator=g).tolist()
         for idx in random_idx:
             self.indices.extend(self.indices_group[idx])
-
 
     def __iter__(self):
         batch = []

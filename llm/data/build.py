@@ -13,7 +13,6 @@ def cyclic_iter(iter):
 
 def build_data_iterator(tokenizer, cfg_data, consumed_train_samples, data_type):
     # batch sampler setting
-    batch_sample_type = cfg_data[data_type]['batch_sampler']['type']
     if 'kwargs' not in cfg_data[data_type]['batch_sampler']:
         cfg_data[data_type]['batch_sampler']['kwargs'] = {}
     assert 'consumed_samples' not in cfg_data[data_type]['batch_sampler']['kwargs'], 'Setting consumed_samples manually is not a recommended action.'       # noqa

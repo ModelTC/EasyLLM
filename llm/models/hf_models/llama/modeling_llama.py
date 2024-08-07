@@ -18,6 +18,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """ PyTorch LLaMA model."""
+from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
+                                           sequence_parallel_wrapper,
+                                           reduce_sequence_parallel_loss,
+                                           get_sequence_parallel_group)
 import math
 import warnings
 from typing import List, Optional, Tuple, Union
@@ -70,20 +74,14 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlamaConfig"
 
 
-from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
-                                           sequence_parallel_wrapper,
-                                           reduce_sequence_parallel_loss,
-                                           get_sequence_parallel_group)
-
-
 @sequence_parallel_wrapper
 def flash_attn_func_seq(
-    query_states,
-    key_states,
-    value_states,
-    dropout,
-    softmax_scale,
-    causal):
+        query_states,
+        key_states,
+        value_states,
+        dropout,
+        softmax_scale,
+        causal):
     attn_output = flash_attn_func(
         query_states,
         key_states,
@@ -97,16 +95,16 @@ def flash_attn_func_seq(
 
 @sequence_parallel_wrapper
 def flash_attn_varlen_func_seq(
-    query_states,
-    key_states,
-    value_states,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    max_seqlen_q,
-    max_seqlen_k,
-    dropout_p=0,
-    softmax_scale=None,
-    causal=True):
+        query_states,
+        key_states,
+        value_states,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        dropout_p=0,
+        softmax_scale=None,
+        causal=True):
     q_unpad, k_unpad, v_unpad = query_states.flatten(0, 1), key_states.flatten(
         0, 1), value_states.flatten(0, 1)
 
@@ -255,7 +253,7 @@ class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -572,7 +570,7 @@ class LlamaFlashAttention2(LlamaAttention):
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         scale = get_sequence_parallel_world_size()
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len*scale)
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len * scale)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -697,7 +695,7 @@ class LlamaFlashAttention2(LlamaAttention):
                         q, k, v, attention_mask, query_length
                     )
                     cu_seqlens_q, cu_seqlens_k = cu_seq_lens
-                    max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_len
+                    max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
                     attn_output_unpad = flash_attn_varlen_func(
                         q, k, v, cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
                         max_seqlen_q=max_seqlen_in_batch_q, max_seqlen_k=max_seqlen_in_batch_k,
@@ -1367,7 +1365,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             # some of the inputs are exclusivelly passed as part of the cache (e.g. when passing input_embeds as
             # input)
             if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
-                input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
+                input_ids = input_ids[:, -(attention_mask.shape[1] - past_length):]
             # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
             # input_ids based on the past_length.
             elif past_length < input_ids.shape[1]:
@@ -1388,7 +1386,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
+                position_ids = position_ids[:, -input_ids.shape[1]:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:

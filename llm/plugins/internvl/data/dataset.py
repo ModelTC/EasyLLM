@@ -49,7 +49,7 @@ def get_sp_groups(pack_group, sp_num):
         temp = 0
         for item in g:
             temp += item[2]
-        lengths.append((temp , idx))
+        lengths.append((temp, idx))
     lengths = sorted(lengths)
 
     sp_groups = []
@@ -127,8 +127,6 @@ class InternvlToolsDataset(Dataset):
                                 meta["img_dir"] = img_dir
                                 meta["data_augment"] = data_augment
                             metas.append(meta)
-                            # if i > 20000:
-                            #     break
                             if ((i + 1) % 1000 == 0):
                                 logger.info('{} items of data have been loaded'.format(i + 1))
                 # break
@@ -197,16 +195,13 @@ class InternPackedDataset(Dataset):
                  down_sample_ratio=0.5,
                  iter_time=100,
                  llm_thresh={},
-                 mutil_group=False):
+                 multi_group=False):
         self.force_image_size = force_image_size
         self.patch_size = patch_size
         self.down_sample_ratio = down_sample_ratio
         self.dataset = build_dataset(dataset, copy.deepcopy(tokenizer))
         self.dataset_cfg = dataset
         self.tokenizer = tokenizer
-        self.vit_packed_length = vit_packed_length
-        self.llm_packed_length = llm_packed_length
-        self.llm_thresh = llm_thresh
 
         self.vit_lengths, self.llm_lengths = [], []
         self.worker = worker
@@ -214,8 +209,11 @@ class InternPackedDataset(Dataset):
         self.ignore_idx = ignore_idx
         self.epoch = epoch
         self.iter_time = iter_time
-        self.mutil_group = mutil_group
         self.sp_num = get_sequence_parallel_world_size()
+        self.multi_group = multi_group
+        self.vit_packed_length = self._convert2list(vit_packed_length)
+        self.llm_packed_length = self._convert2list(llm_packed_length)
+        self.llm_thresh = self._convert2list(llm_thresh)
 
         os.makedirs(cache_dir, exist_ok=True)
         print("Begin preprocess dataset", flush=True)
@@ -228,8 +226,12 @@ class InternPackedDataset(Dataset):
         if self.sp_num > 1:
             for sp_g in self.pack_groups:
                 temp = 0
-                for g in sp_g:
-                    for item in g:
+                if isinstance(sp_g, list) and len(sp_g) == self.sp_num:
+                    for g in sp_g:
+                        for item in g:
+                            temp += item[2]
+                else:
+                    for item in sp_g:
                         temp += item[2]
                 lengths.append(temp)
         else:
@@ -241,8 +243,19 @@ class InternPackedDataset(Dataset):
 
         self.lengths = lengths
 
+    def _convert2list(self, item):
+        if self.multi_group:
+            target_len = len(self.dataset.json_file)
+        else:
+            target_len = 1
+        if not isinstance(item, list):
+            item = [item] * target_len
+
+        assert len(item) == target_len
+        return item
+
     def preprocess_single(self):
-        if self.mutil_group:
+        if self.multi_group:
             dict_num_tokens = []
             json_file_list = self.dataset.json_file
             if not isinstance(json_file_list, list):
@@ -439,11 +452,17 @@ class InternPackedDataset(Dataset):
 
     def get_packed_groups(self):
         # num_datasets = len(self.dataset.datasets)
-        if self.mutil_group:
+        if self.multi_group:
             accu_length = 0
             total_group = []
             num_samples = []
-            for dict_num_tokens in self.dict_num_tokens:
+            vit_packed_length_list = self.vit_packed_length
+            llm_packed_length_list = self.llm_packed_length
+            llm_thresh_list = self.llm_thresh
+            for idx, dict_num_tokens in enumerate(self.dict_num_tokens):
+                self.vit_packed_length = vit_packed_length_list[idx]
+                self.llm_packed_length = llm_packed_length_list[idx]
+                self.llm_thresh = llm_thresh_list[idx]
                 num_datasets = len(list(dict_num_tokens.keys()))
                 input_groups = []
                 for d_idx in range(num_datasets):
@@ -458,14 +477,19 @@ class InternPackedDataset(Dataset):
                 else:
                     groups = self.find_best_groups(input_groups, self.llm_thresh.get('step', 4), self.llm_thresh.get('step_num', 10))
                 print(self.collect_packed_info(groups), flush=True)
-                if self.sp_num > 1:
+                if self.sp_num > 1 and self.llm_packed_length < 30000:
                     groups = get_sp_groups(groups, self.sp_num)
+                # for test
+                # groups = groups[:10000]
                 num_samples.append(len(groups))
                 total_group.extend(groups)
             print("get_packed_groups done!", flush=True)
             self.num_samples = num_samples
             return total_group
         else:
+            self.vit_packed_length = self.vit_packed_length[0]
+            self.llm_packed_length = self.llm_packed_length[0]
+            self.llm_thresh = self.llm_thresh[0]
             num_datasets = len(list(self.dict_num_tokens.keys()))
             accu_length = 0
             input_groups = []
@@ -483,75 +507,75 @@ class InternPackedDataset(Dataset):
 
             print(self.collect_packed_info(groups), flush=True)
             print("get_packed_groups done!", flush=True)
-            if self.sp_num > 1:
+            if self.sp_num > 1 and self.llm_packed_length < 30000:
                 groups = get_sp_groups(groups, self.sp_num)
 
             return groups
 
     def __getitem__(self, item: int):
         item = item % len(self.pack_groups)
-        while True:
-            try:
+        # while True:
+        # try:
         # item = random.randint(0, len(self.pack_groups) - 1)
-                groups = self.pack_groups[item]
-                if self.sp_num == 1:
-                    groups_list = [groups]
-                else:
-                    groups_list = groups
+        groups = self.pack_groups[item]
+        if self.sp_num > 1 and len(groups) == self.sp_num:
+            groups_list = groups
+        else:
+            groups_list = [groups]
 
-                sample_list = []
-                for groups in groups_list:
-                    input_ids, pixel_values = [], []
-                    labels, position_ids, image_flags = [], [], []
-                    cu_seqlens = [0]
-                    for g in groups:
-                        idx, num_patches, llm_length = g
-                        meta = self.dataset.__getitem__(idx)
-                #       print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
-                        assert len(meta["input_ids"]) == llm_length
-                        assert meta["image_flags"].sum() == num_patches
-                        input_ids.append(meta['input_ids'])
-                        pixel_values.append(meta['pixel_values'])
-                        labels.append(meta['labels'])
-                        cu_seqlens.append(len(meta['input_ids']))
-                        position_ids.extend(list(range(len(meta['input_ids']))))
-                        image_flags.append(meta.get('image_flags', torch.tensor([0], dtype=torch.long)))
+        sample_list = []
+        for groups in groups_list:
+            input_ids, pixel_values = [], []
+            labels, position_ids, image_flags = [], [], []
+            cu_seqlens = [0]
+            for g in groups:
+                idx, num_patches, llm_length = g
+                meta = self.dataset.__getitem__(idx)
+                # print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
+                # assert len(meta["input_ids"]) == llm_length, f"llm_length: {llm_length} input_ids: {len(meta['input_ids'])}"
+                # assert meta["image_flags"].sum() == num_patches
+                input_ids.append(meta['input_ids'])
+                pixel_values.append(meta['pixel_values'])
+                labels.append(meta['labels'])
+                cu_seqlens.append(len(meta['input_ids']))
+                position_ids.extend(list(range(len(meta['input_ids']))))
+                image_flags.append(meta.get('image_flags', torch.tensor([0], dtype=torch.long)))
 
-                    cu_seqlens = np.cumsum(np.array(cu_seqlens)).tolist()
-                    input_ids = torch.cat(input_ids)[:self.llm_packed_length]
-                    pixel_values = torch.cat(pixel_values)# [:self.vit_packed_length]
-                    labels = torch.cat(labels)[:self.llm_packed_length]
-                    cu_seqlens = torch.clamp(torch.LongTensor(cu_seqlens), max=self.llm_packed_length)
-                    position_ids = torch.LongTensor(position_ids)[:self.llm_packed_length]
-                    image_flags = torch.cat(image_flags)
+            cu_seqlens = np.cumsum(np.array(cu_seqlens)).tolist()
+            input_ids = torch.cat(input_ids)[:self.llm_packed_length]
+            pixel_values = torch.cat(pixel_values)  # [:self.vit_packed_length]
+            labels = torch.cat(labels)[:self.llm_packed_length]
+            cu_seqlens = torch.clamp(torch.LongTensor(cu_seqlens), max=self.llm_packed_length)
+            position_ids = torch.LongTensor(position_ids)[:self.llm_packed_length]
+            image_flags = torch.cat(image_flags)
 
-                    if image_flags.sum() == 0:
-                        # for no img
-                        # pixel_values = pixel_values[0].unsqueeze(0).resize_(1, 3, 56, 56)
-                        pixel_values = pixel_values[0].unsqueeze(0)
-                        image_flags = torch.tensor([0], dtype=torch.long)
-                    else:
-                        pixel_values = pixel_values[image_flags.view(-1)==1]
-                        image_flags = image_flags[image_flags.view(-1)==1]
-                #  image_flags = image_flags[image_flags.view(-1)==1]
-                #  pixel_values = pixel_values[image_flags.view(-1)==1]
-                    if len(image_flags) == 0:  # pure llm text
-                        image_flags = torch.tensor([0], dtype=torch.long)
+            if image_flags.sum() == 0:
+                # for no img
+                # pixel_values = pixel_values[0].unsqueeze(0).resize_(1, 3, 56, 56)
+                pixel_values = pixel_values[0].unsqueeze(0)
+                image_flags = torch.tensor([0], dtype=torch.long)
+            else:
+                pixel_values = pixel_values[image_flags.view(-1) == 1]
+                image_flags = image_flags[image_flags.view(-1) == 1]
+        #  image_flags = image_flags[image_flags.view(-1)==1]
+        #  pixel_values = pixel_values[image_flags.view(-1)==1]
+            if len(image_flags) == 0:  # pure llm text
+                image_flags = torch.tensor([0], dtype=torch.long)
 
-                    ret = {
-                        "input_ids": input_ids,
-                        "labels": labels,
-                        "cu_seqlens": cu_seqlens,
-                        "position_ids": position_ids,
-                        "pixel_values": pixel_values,
-                        "image_flags": image_flags
-                    }
-                    sample_list.append(ret)
-                break
-            except Exception as e:
-                print(f"{e}", flush=True)
-                # i = random.randint(0, len(self.raw_data) - 1)
-                item = (item + 100) % len(self.pack_groups)
+            ret = {
+                "input_ids": input_ids,
+                "labels": labels,
+                "cu_seqlens": cu_seqlens,
+                "position_ids": position_ids,
+                "pixel_values": pixel_values,
+                "image_flags": image_flags
+            }
+            sample_list.append(ret)
+            # break
+            # except Exception as e:
+            #     print(f"{e}", flush=True)
+            #     # i = random.randint(0, len(self.raw_data) - 1)
+            #     item = (item + 100) % len(self.pack_groups)
 
         if self.sp_num > 1:
             return sample_list

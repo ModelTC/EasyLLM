@@ -5,6 +5,7 @@ import json
 from torch.utils.data import Dataset
 import numpy as np
 
+
 def get_token_sum(g):
     sum = 0
     for i in g:
@@ -140,7 +141,6 @@ class MegatronLengthGroupSampler:
         megabatches = [self.split_to_even_chunks(megabatch, lengths, world_size) for megabatch in megabatches]
 
         return [i for megabatch in megabatches for batch in megabatch for i in batch]
-    
 
     def __len__(self):
         return self.total_samples
@@ -251,7 +251,7 @@ class BalancedDataset(Dataset):
         info['vit_length_mean'] = np.mean(all_vit_length)
         info['vit_length_var'] = np.var(all_vit_length)
         info['vit_length_std'] = np.std(all_vit_length)
-        
+
         info['llm_length_mean'] = np.mean(all_llm_length)
         info['llm_length_var'] = np.var(all_llm_length)
         info['llm_length_std'] = np.std(all_llm_length)
@@ -369,7 +369,7 @@ class BalancedDataset(Dataset):
         info_dict['ave_bs'] = sample_num / float(len(packed_groups))
         self.info_dict = info_dict
         return info_dict
-    
+
     def __getitem__(self, idx):
         groups = self.pack_group[idx]
         vit_num = 0
@@ -384,6 +384,7 @@ class BalancedDataset(Dataset):
         Returns dataset length
         """
         return len(self.pack_group)
+
 
 class BaseDataset(Dataset):
     def __init__(self,
@@ -447,6 +448,7 @@ class BatchCollector(object):
             vit_num=vit_num
         )
 
+
 def get_pad_dist_ratio(dataset, sampler_type='random', dp_size=16, micro_bs=4):
     random_pad_token = 0
     random_all_token = 0
@@ -505,15 +507,17 @@ def get_pad_dist_ratio(dataset, sampler_type='random', dp_size=16, micro_bs=4):
     print('dist ratio vit', vit_dist_ratio)
     return pad_ratio, vit_dist_ratio, llm_dist_ratio
 
+
 def get_init_llm_vit_len(json_files):
     o_dataset = BalancedDataset(json_files=json_files, init=False)
     o_vit_bs_mean = o_dataset.origin_info['vit_length_mean']
     o_llm_len_mean = o_dataset.origin_info['llm_length_mean']
-    init_ave_bs_llm_len = ((o_llm_len_mean // o_vit_bs_mean + 1) // 16) *  16
+    init_ave_bs_llm_len = ((o_llm_len_mean // o_vit_bs_mean + 1) // 16) * 16
 
     init_llm_len = 4096
     init_vit_bs = init_llm_len // init_ave_bs_llm_len
     return init_vit_bs, init_llm_len, init_ave_bs_llm_len
+
 
 if __name__ == "__main__":
 
@@ -550,5 +554,3 @@ if __name__ == "__main__":
             llm_len += step * init_ave_bs_llm_len
     print("ratio, v_dist_ratio, l_dist_ratio, vit_bs, llm_len, llm_thresh, ave_bs")
     print(sorted(result_list))
-
-    

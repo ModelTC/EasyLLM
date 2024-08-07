@@ -14,6 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """ PyTorch InternLM2 model."""
+from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
+                                           sequence_parallel_wrapper,
+                                           reduce_sequence_parallel_loss,
+                                           get_sequence_parallel_group)
 import math
 import queue
 import threading
@@ -67,20 +71,14 @@ def _import_flash_attn():
         raise ImportError('flash_attn is not installed.')
 
 
-from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
-                                           sequence_parallel_wrapper,
-                                           reduce_sequence_parallel_loss,
-                                           get_sequence_parallel_group)
-
-
 @sequence_parallel_wrapper
 def flash_attn_func_seq(
-    query_states,
-    key_states,
-    value_states,
-    dropout,
-    softmax_scale,
-    causal):
+        query_states,
+        key_states,
+        value_states,
+        dropout,
+        softmax_scale,
+        causal):
     attn_output = flash_attn_func(
         query_states,
         key_states,
@@ -94,16 +92,16 @@ def flash_attn_func_seq(
 
 @sequence_parallel_wrapper
 def flash_attn_varlen_func_seq(
-    query_states,
-    key_states,
-    value_states,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    max_seqlen_q,
-    max_seqlen_k,
-    dropout_p=0,
-    softmax_scale=None,
-    causal=True):
+        query_states,
+        key_states,
+        value_states,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        dropout_p=0,
+        softmax_scale=None,
+        causal=True):
     q_unpad, k_unpad, v_unpad = query_states.flatten(0, 1), key_states.flatten(
         0, 1), value_states.flatten(0, 1)
 
@@ -296,7 +294,7 @@ class InternLM2DynamicNTKScalingRotaryEmbedding(InternLM2RotaryEmbedding):
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -565,7 +563,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         scale = get_sequence_parallel_world_size()
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len*scale)
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len * scale)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -627,7 +625,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
             cu_seqlens_offset[:-1] = cu_seqlens[1:]
             max_seqlen = max(cu_seqlens_offset[:-1] - cu_seqlens[:-1]).item()
 
-            if get_sequence_parallel_world_size() > 1:
+            if get_sequence_parallel_world_size() > 1 and max_seqlen > 30000:
                 attn_output = flash_attn_varlen_func_seq(
                     query_states,
                     key_states,
@@ -666,7 +664,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
                         q, k, v, attention_mask, query_length
                     )
                     cu_seqlens_q, cu_seqlens_k = cu_seq_lens
-                    max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_len
+                    max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
                     attn_output_unpad = flash_attn_varlen_func(
                         q, k, v, cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
                         max_seqlen_q=max_seqlen_in_batch_q, max_seqlen_k=max_seqlen_in_batch_k,
@@ -1284,7 +1282,7 @@ class InternLM2ForCausalLM(InternLM2PreTrainedModel):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
+                position_ids = position_ids[:, -input_ids.shape[1]:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
@@ -1353,7 +1351,7 @@ class InternLM2ForCausalLM(InternLM2PreTrainedModel):
             eos_token_id=eos_token_id,
             **kwargs,
         )
-        outputs = outputs[0].cpu().tolist()[len(inputs['input_ids'][0]) :]
+        outputs = outputs[0].cpu().tolist()[len(inputs['input_ids'][0]):]
         response = tokenizer.decode(outputs, skip_special_tokens=True)
         response = response.split('<|im_end|>')[0]
         history = history + [(query, response)]

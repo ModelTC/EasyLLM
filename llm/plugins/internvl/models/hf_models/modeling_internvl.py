@@ -21,10 +21,6 @@ from .modeling_intern_vit import InternVisionModel
 from .modeling_eva_vit import EvaCLIPVisionModel
 # from ...datas.conversation import get_conv_template
 
-from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
-                                           reduce_sequence_parallel_loss,
-                                           get_sequence_parallel_group)
-
 
 logger = logging.get_logger(__name__)
 
@@ -164,7 +160,7 @@ class InternVLChatModel(PreTrainedModel):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            cu_seqlens = None
+            cu_seqlens=None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -186,7 +182,7 @@ class InternVLChatModel(PreTrainedModel):
         except Exception as e:
             vit_embeds = vit_embeds.reshape(-1, C)
             print(f'warning: {e}, input_embeds[selected].shape={input_embeds[selected].shape}, '
-                    f'vit_embeds.shape={vit_embeds.shape}')
+                  f'vit_embeds.shape={vit_embeds.shape}')
             n_token = min(selected.sum(), vit_embeds.shape[0])
             selected = selected[:n_token]
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds[:n_token]
@@ -223,10 +219,12 @@ class InternVLChatModel(PreTrainedModel):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-            if get_sequence_parallel_world_size() > 1:
-                sp_group = get_sequence_parallel_group()
-                num_tokens = (shift_labels != -100).sum()
-                loss = reduce_sequence_parallel_loss(loss, num_tokens, sp_group)
+            # cu_seqlens = cu_seqlens.view(-1)
+            # long_data = (cu_seqlens[1] - cu_seqlens[0]) > 30000
+            # if get_sequence_parallel_world_size() > 1 and long_data:
+            #     sp_group = get_sequence_parallel_group()
+            #     num_tokens = (shift_labels != -100).sum()
+            #     loss = reduce_sequence_parallel_loss(loss, num_tokens, sp_group)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

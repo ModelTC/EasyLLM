@@ -56,7 +56,7 @@ class CrossEntropy(object):
                 loss = output.view(bs * d, -1)[ignore_mask].sum()
             else:
                 losses = vocab_parallel_cross_entropy(output.contiguous().float(),
-                                                    labels, self.cut_size)
+                                                      labels, self.cut_size)
                 bs = labels.shape[0]
                 loss = []
                 for b in range(bs):
@@ -67,7 +67,7 @@ class CrossEntropy(object):
                     b_loss = 0.
                     sum_sqrt_token = 0.
                     for idx in range(1, len(single_cu_seqlen)):
-                        start, end = single_cu_seqlen[idx-1], single_cu_seqlen[idx]
+                        start, end = single_cu_seqlen[idx - 1], single_cu_seqlen[idx]
                         single_losses_ = single_losses[start:end]
                         single_labels_ = single_labels[start:end].unsqueeze(0)
                         single_loss_mask_ = single_loss_mask[start:end].unsqueeze(0)

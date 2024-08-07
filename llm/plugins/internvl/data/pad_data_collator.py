@@ -90,21 +90,47 @@ class InternvlCollector(BatchAlignCollector):
 
 @dataclass
 @BATCH_COLLECTOR_REGISTRY.register('internvl_hf')
-class InternvlCollector(BatchAlignCollector):
+class InternvlHFCollector(BatchAlignCollector):
     def __init__(self, tokenizer, alignment=1, offset_label=True):
         self.sp_num = get_sequence_parallel_world_size()
         if self.sp_num > 1:
             alignment = math.lcm(get_sequence_parallel_world_size(), alignment)
         super().__init__(tokenizer, alignment=alignment, offset_label=offset_label)
 
+    def split_for_sp(self, tensor, size, dim, rank):
+        tensor_list = torch.split(tensor, size // self.sp_num, dim=dim)
+        return tensor_list[rank].contiguous()
+
     def __call__(self, instances, pad_id=0):
+        pos_cu_pad = True
         if self.sp_num > 1:
+            rank = get_sequence_parallel_rank()
             assert len(instances) == 1, "Only support batch size is 1 under sp condition"
-            assert len(instances[0]) == self.sp_num
-            length_list = []
-            for instance in instances[0]:
-                length_list.append(len(instance['input_ids']))
-            max_item_length = max(length_list)
+            if len(instances[0]) == self.sp_num:
+                length_list = []
+                for instance in instances[0]:
+                    length_list.append(len(instance['input_ids']))
+                max_item_length = max(length_list)
+                instances = [instances[0][rank]]
+            else:
+                instance = instances[0][0]
+                length = len(instance['input_ids'])
+                max_item_length = math.ceil(length / float(self.alignment)) * self.alignment
+                temp_input_ids = torch.LongTensor([pad_id] * max_item_length)
+                temp_input_ids[:length] = instance['input_ids']
+                temp_labels = torch.LongTensor([IGNORE_INDEX] * max_item_length)
+                temp_labels[:length] = instance['labels']
+                temp_position_ids = torch.LongTensor([0] * max_item_length)
+                temp_position_ids[:length] = instance['position_ids']
+                instance['cu_seqlens'][-1] = max_item_length
+
+                instance['input_ids'] = self.split_for_sp(temp_input_ids, max_item_length, 0, rank)
+                instance['labels'] = self.split_for_sp(temp_labels, max_item_length, 0, rank)
+                instance['position_ids'] = self.split_for_sp(temp_position_ids, max_item_length, 0, rank)
+                max_item_length = len(instance['input_ids'])
+                instances = [instance]
+
+                pos_cu_pad = False
 
             # accum_length = 0
             # cu_seqlens_list = [torch.tensor([0], dtype=torch.int32, device=instances[0][0]['cu_seqlens'].device)]
@@ -118,14 +144,14 @@ class InternvlCollector(BatchAlignCollector):
             #     instance['cu_seqlens'][-1] = accum_length
             #     cu_seqlens_list.append(instance['cu_seqlens'][1:])
 
-            rank = get_sequence_parallel_rank()
-            instances = [instances[0][rank]]
+            # rank = get_sequence_parallel_rank()
+            # instances = [instances[0][rank]]
             # instances[0]['cu_seqlens'] = torch.cat(cu_seqlens_list)
         else:
             batch_lens = [feat['input_ids'].shape for feat in instances]
             max_item_length = max(batch_lens)[0]
             max_item_length = math.ceil(max_item_length / float(self.alignment)) * self.alignment
-        
+
         first = instances[0]
         batch = {}
         for idx in range(len(instances)):
@@ -142,7 +168,7 @@ class InternvlCollector(BatchAlignCollector):
             else:
                 temp_labels[:feat['labels'].shape[0]] = feat['labels']
             feat['labels'] = temp_labels
-            if "position_ids" in feat: #  and self.sp_num == 1
+            if "position_ids" in feat and pos_cu_pad:  # and self.sp_num == 1
                 # position_ids
                 temp_position_ids = torch.LongTensor([0] * max_item_length)
                 if self.offset_label:
@@ -150,7 +176,7 @@ class InternvlCollector(BatchAlignCollector):
                 else:
                     temp_position_ids[:feat['position_ids'].shape[0]] = feat['position_ids']
                 feat['position_ids'] = temp_position_ids
-            if "cu_seqlens" in feat: # and self.sp_num == 1
+            if "cu_seqlens" in feat and pos_cu_pad:  # and self.sp_num == 1
                 feat['cu_seqlens'][-1] = feat['position_ids'].size(0)
             feat['attention_mask'] = feat['input_ids'].ne(pad_id)
 

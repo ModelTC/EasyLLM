@@ -13,7 +13,6 @@ from llm.utils.env import dist_env
 from llm.utils.general.registry_factory import BATCH_COLLECTOR_REGISTRY, DATALOADER_REGISTRY
 from .nlp_dataset import build_dataset
 from .nlp_sampler import build_batch_sampler, InfiniteBatchSampler
-from llm.models.hf_models.sequence import get_sequence_parallel_world_size
 
 
 @dataclass

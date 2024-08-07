@@ -5,8 +5,6 @@ import torch
 from .configuration_intern_vit import InternVisionConfig
 from .modeling_intern_vit import InternVisionModel
 from .modeling_internlm2 import InternLM2ForCausalLM
-from .modeling_internvl import InternVLChatModel
-from transformers import AutoConfig
 from llm.utils.general.log_helper import default_logger as logger
 
 
@@ -34,7 +32,6 @@ def build_model(**cfg):
         else:
             from transformers import AutoModelForCausalLM
             llm = AutoModelForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
-        
 
         internvl_chat_config = InternVLChatConfig(vision_config.to_dict(),
                                                   llm_config.to_dict(),
@@ -73,7 +70,7 @@ def build_model(**cfg):
             model_name_or_path,
             torch_dtype=torch.bfloat16,
             config=config,)
-            #ignore_mismatched_sizes=True)
+        # ignore_mismatched_sizes=True)
 
         # model = InternVLChatModel._from_config(config, torch_dtype=torch.bfloat16)
         # model.vision_model.init_weights()

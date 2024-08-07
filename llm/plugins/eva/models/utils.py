@@ -546,7 +546,6 @@ def hf_to_megatron_mlp1(dt, model, vit_layers):
     return output_dt
 
 
-
 def get_start_end(size, tp_world_size, tp_rank):
     base_block_size = size
     res = {}

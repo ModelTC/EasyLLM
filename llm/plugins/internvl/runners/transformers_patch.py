@@ -1,3 +1,5 @@
+# flake8: noqa
+from transformers.utils.quantization_config import QuantizationMethod
 import torch
 import os
 import copy
@@ -18,8 +20,9 @@ from transformers.integrations import deepspeed_config, is_deepspeed_zero3_enabl
 from llm.utils.env import dist_env, initialize_model_parallel
 try:
     initialize_model_parallel()
-except:
+except BaseException:
     pass
+
 
 def is_fsdp_enabled():
     return (
@@ -29,7 +32,7 @@ def is_fsdp_enabled():
         and strtobool(os.environ.get("FSDP_CPU_RAM_EFFICIENT_LOADING", "False")) == 1
     )
 
-from transformers.utils.quantization_config import QuantizationMethod
+
 if is_peft_available():
     from transformers.utils import find_adapter_config_file
 
@@ -48,44 +51,45 @@ logger = logging.get_logger(__name__)
 
 @classmethod
 def _from_config(cls, config, **kwargs):
-        """
-        All context managers that the model should be initialized under go here.
+    """
+    All context managers that the model should be initialized under go here.
 
-        Args:
-            torch_dtype (`torch.dtype`, *optional*):
-                Override the default `torch.dtype` and load the model under this dtype.
-        """
-        torch_dtype = kwargs.pop("torch_dtype", None)
-        use_flash_attention_2 = kwargs.pop("use_flash_attention_2", False)
+    Args:
+        torch_dtype (`torch.dtype`, *optional*):
+            Override the default `torch.dtype` and load the model under this dtype.
+    """
+    torch_dtype = kwargs.pop("torch_dtype", None)
+    use_flash_attention_2 = kwargs.pop("use_flash_attention_2", False)
 
-        # override default dtype if needed
-        dtype_orig = None
-        if torch_dtype is not None:
-            dtype_orig = cls._set_default_torch_dtype(torch_dtype)
+    # override default dtype if needed
+    dtype_orig = None
+    if torch_dtype is not None:
+        dtype_orig = cls._set_default_torch_dtype(torch_dtype)
 
-        config = copy.deepcopy(config)  # We do not want to modify the config inplace in _from_config.
-        config._attn_implementation = kwargs.pop("attn_implementation", None)
-        config = cls._autoset_attn_implementation(
-            config, use_flash_attention_2=use_flash_attention_2, check_device_map=False
-        )
+    config = copy.deepcopy(config)  # We do not want to modify the config inplace in _from_config.
+    config._attn_implementation = kwargs.pop("attn_implementation", None)
+    config = cls._autoset_attn_implementation(
+        config, use_flash_attention_2=use_flash_attention_2, check_device_map=False
+    )
 
-        if is_deepspeed_zero3_enabled():
-            import deepspeed
+    if is_deepspeed_zero3_enabled():
+        import deepspeed
 
-            logger.info("Detected DeepSpeed ZeRO-3: activating zero.init() for this model")
-            # this immediately partitions the model across all gpus, to avoid the overhead in time
-            # and memory copying it on CPU or each GPU first
-         #   with deepspeed.zero.Init(config_dict_or_path=deepspeed_config()):
-            with deepspeed.zero.MiCS_Init(data_parallel_group=dist_env.get_data_parallel_group(),config_dict_or_path=deepspeed_config(), mpu=dist_env):
-                model = cls(config, **kwargs)
-        else:
+        logger.info("Detected DeepSpeed ZeRO-3: activating zero.init() for this model")
+        # this immediately partitions the model across all gpus, to avoid the overhead in time
+        # and memory copying it on CPU or each GPU first
+     #   with deepspeed.zero.Init(config_dict_or_path=deepspeed_config()):
+        with deepspeed.zero.MiCS_Init(data_parallel_group=dist_env.get_data_parallel_group(), config_dict_or_path=deepspeed_config(), mpu=dist_env):
             model = cls(config, **kwargs)
+    else:
+        model = cls(config, **kwargs)
 
-        # restore default dtype if it was modified
-        if dtype_orig is not None:
-            torch.set_default_dtype(dtype_orig)
+    # restore default dtype if it was modified
+    if dtype_orig is not None:
+        torch.set_default_dtype(dtype_orig)
 
-        return model
+    return model
+
 
 @classmethod
 def from_pretrained(
@@ -1044,7 +1048,11 @@ def from_pretrained(
         import deepspeed
 
         logger.info("Detected DeepSpeed ZeRO-3: activating zero.init() for this model")
-        init_contexts = [deepspeed.zero.MiCS_Init(data_parallel_group=dist_env.get_data_parallel_group(),config_dict_or_path=deepspeed_config(), mpu=dist_env)] + init_contexts
+        init_contexts = [
+            deepspeed.zero.MiCS_Init(
+                data_parallel_group=dist_env.get_data_parallel_group(),
+                config_dict_or_path=deepspeed_config(),
+                mpu=dist_env)] + init_contexts
         #   init_contexts = [deepspeed.zero.Init(config_dict_or_path=deepspeed_config())] + init_contexts
     elif load_in_8bit or load_in_4bit or low_cpu_mem_usage:
         init_contexts.append(init_empty_weights())

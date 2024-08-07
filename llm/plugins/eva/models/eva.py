@@ -18,7 +18,7 @@ from llm.models.mg_models.base_modules.modules.fp16_module import float16_to_fp3
 from .default_cfg import update_model_cfg
 from llm.plugins.eva.models.utils import load_lora_ckpt_pretrained, load_ckpt_pretrained, save_lora_ckpt_pretrained
 from llm.plugins.eva.models.utils import set_train_params, set_train_status
-from llm.plugins.eva.models.utils import measure_time, dist_save_obj_to_json
+from llm.plugins.eva.models.utils import measure_time
 from llm.utils.general.registry_factory import LOSS_REGISTRY
 
 from .vision_embeddings import VisionEmbeddings
@@ -261,7 +261,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                     for tp_res in gather_tp:
                         for dp_res in tp_res:
                             for info in dp_res:
-                                import json
+                                import json  # noqa
                                 path = os.path.join(self.profile_path, f"pp_stage_{pp_rank}.txt")
                                 with open(path, "a") as f:
                                     print(json.dumps(info), file=f, flush=True)
@@ -319,7 +319,6 @@ class EVAModelPipe(PipelineModule, MegatronModule):
         tp_rank = dist_env.get_tensor_model_parallel_rank()
         dp_rank = dist_env.get_data_parallel_rank()
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
-        world_size = dist_env.get_pipeline_model_parallel_world_size()
         pp_profile_list = []
         import json
         for rank in [self.pure_vit_stage_id, self.pure_llm_stage_id]:
@@ -328,7 +327,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 for line in f.readlines():
                     try:
                         temp.append(json.loads(line))
-                    except: # noqa
+                    except:  # noqa
                         pass
             pp_profile_list.append(temp)
 
@@ -374,7 +373,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
 
         if vit_nockpt_num1 == 0 and llm_nockpt_num1 == 0:
             cost_memory1 = 0
-        
+
         print(pp_rank, "cost memory info", cost_memory1, cost_memory2, vit_nockpt_num1, llm_nockpt_num1, vit_nockpt_num2, llm_nockpt_num2)
         result = solve([vit_nockpt_num1 * x + llm_nockpt_num1 * y - cost_memory1, vit_nockpt_num2 * x + llm_nockpt_num2 * y - cost_memory2], [x, y])
         vit_cost = self.dc_profile.get('vit_memory_estimate', 2) * 1024
@@ -388,7 +387,6 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             with open(os.path.join(self.profile_path, f"pp_stage_memory_cost_vit_llm.txt"), "a") as f:
                 print(json.dumps(self.memory_cost_vit_llm), file=f, flush=True)
         print(pp_rank, "vit llm memory cost", self.memory_cost_vit_llm)
-
 
     def ave_free_memory(self):
         free_memory_list = []
@@ -410,7 +408,6 @@ class EVAModelPipe(PipelineModule, MegatronModule):
 
     def adjust_ckpt_num_warmup(self):
         rank = dist_env.get_pipeline_model_parallel_rank()
-        world_size = dist_env.get_pipeline_model_parallel_world_size()
         ckpt_num = self.pp_checkpoint_num[rank]
 
         step_num = self.warmup_iter // 2 + 1
@@ -427,7 +424,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 ckpt_num = self.pp_checkpoint_num[rank] - free_memory // (1024 * llm_memory_estimate)
             self.warmup_ckpt_num = ckpt_num
         return max(self.warmup_ckpt_num, 1)
-    
+
     def get_nockpt_num(self, free_memory):
         pp_rank = dist_env.get_pipeline_model_parallel_rank()
         vit_num, llm_num = self.pp_vit_llm_layer_num[pp_rank]
@@ -459,7 +456,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
                 for line in f.readlines():
                     try:
                         temp.append(json.loads(line))
-                    except: # noqa
+                    except:  # noqa
                         pass
             pp_profile_list.append(temp)
         free_memory_list = []
@@ -479,7 +476,7 @@ class EVAModelPipe(PipelineModule, MegatronModule):
             if pp_rank < self.pure_llm_stage_id:
                 add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[0] + 1
             else:
-                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[1] + 1      
+                add_num = (predefine_memory - self.pp_profile[-1]['free_memory']) // self.memory_cost_vit_llm[1] + 1
             final_ckpt_num += add_num
         dist.all_reduce(final_ckpt_num, group=dist_env.get_data_parallel_group(), op=dist.ReduceOp.AVG)
         dist.all_reduce(final_ckpt_num, group=dist_env.get_tensor_model_parallel_group(), op=dist.ReduceOp.AVG)

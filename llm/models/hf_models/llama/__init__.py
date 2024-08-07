@@ -17,4 +17,3 @@ def build_model(**cfg):
 
 # register model & tokenizer
 MODULE_ZOO_REGISTRY.register("LlamaForCausalLM", build_model)
-

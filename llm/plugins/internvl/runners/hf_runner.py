@@ -40,9 +40,7 @@ from llm.plugins.internvl.data.data_utils import (
     QUAD_END_TOKEN
 )
 from llm.runners.hf_runner import HFRunner
-from llm.models.hf_models.sequence import (init_sequence_parallel,
-                                           get_sequence_parallel_group,
-                                           split_for_sequence_parallel)
+from llm.models.hf_models.sequence import init_sequence_parallel
 
 
 class MLLMHFRunner(HFRunner):
@@ -70,7 +68,6 @@ class MLLMHFRunner(HFRunner):
 
         sequence_parallel_world_size = self.config['runtime'].get('sp', 1)
         init_sequence_parallel(sequence_parallel_world_size)
-
 
     def build(self):
         self.build_env()
@@ -154,7 +151,7 @@ class MLLMHFRunner(HFRunner):
         if self.config['runtime'].get('unfreeze_lm_head', False):
             try:
                 model.language_model.lm_head.requires_grad = True
-            except Exception as e:
+            except Exception:
                 model.language_model.output.requires_grad = True
         if self.config['runtime'].get('freeze_mlp', False):
             _freeze_params(model.mlp1)
