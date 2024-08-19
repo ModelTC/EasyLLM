@@ -208,13 +208,31 @@ class MiniRLHFBatchCollector(BatchAlignCollector):
             re_labels.extend(labels[i])
 
         input_ids, labels = self._pad_func(re_input_ids, re_labels)
-
         return dict(
             input_ids=input_ids,
             labels=labels,
             scores=torch.cat(scores, dim=0),
             attention_mask=input_ids.ne(self.pad_token_id),
         )
+
+
+@dataclass
+@BATCH_COLLECTOR_REGISTRY.register('packed_dpo_batch')
+class PackedDPOCollector(BatchAlignCollector):
+    """Collate examples for packed dpo fine-tuning."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        for instance in instances:
+            if 'scores' not in instance:
+                instance['scores'] = torch.ones_like(
+                    torch.diff(instance['cu_seqlens']), dtype=torch.float32) * 9999.
+        scores = torch.stack([instance["scores"] for instance in instances])
+        data = super().__call__(instances)
+        data.update({"scores": scores})
+        return data
 
 
 # TODO: remove once torch no longer has segment errors in large worker numbers.

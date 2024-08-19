@@ -5,6 +5,41 @@ from llm.utils.env import dist_env
 from llm.utils.general.registry_factory import BATCH_FN_REGISTRY
 
 
+@BATCH_FN_REGISTRY.register('json_batch_pipe')
+class JsonBatchFunction(object):
+    def __init__(self, tokenizer, reset_position_ids, reset_attention_mask,
+                 eod_mask_loss=True, prefix_indices=None, loss_on_targets_only=True,
+                 hf_atten_mask=False):
+        self.tokenizer = tokenizer
+        self.reset_position_ids = reset_position_ids
+        self.reset_attention_mask = reset_attention_mask
+        self.eod_mask_loss = eod_mask_loss
+        self.prefix_indices = prefix_indices
+        self.loss_on_targets_only = loss_on_targets_only
+        self.hf_atten_mask = hf_atten_mask
+        self.pad_token_id = len(self.tokenizer) - 1
+
+    def __call__(self, data):
+        # Items and their type.
+        keys = ['labels', 'input_ids']
+        datatype = torch.int64
+        # Broadcast data.
+        data_b = dist_env.broadcast_data(keys, data, datatype)
+
+        labels = data_b['labels'].long()
+        tokens = data_b['input_ids'].long()
+        attention_mask = tokens.ne(self.pad_token_id)
+        loss_mask = attention_mask.clone()
+        _, seq_length = tokens.size()
+        position_ids = torch.arange(seq_length, dtype=torch.long,
+                                    device=tokens.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(tokens)
+
+        assert not self.hf_atten_mask, "hf_atten_mask not supported in json_batch_pipe"
+
+        return (tokens, position_ids, attention_mask), (labels, loss_mask)
+
+
 def get_batch_on_this_cp_rank(batch):
     # cp_size = dist_env.get_tensor_model_parallel_world_size()
     cp_size = dist_env.get_context_parallel_world_size()
@@ -17,14 +52,14 @@ def get_batch_on_this_cp_rank(batch):
                 *val.shape[0:seq_dim],
                 2 * cp_size,
                 val.shape[seq_dim] // (2 * cp_size),
-                *val.shape[(seq_dim + 1) :],
+                *val.shape[(seq_dim + 1):],
             )
             index = torch.tensor([cp_rank, (2 * cp_size - cp_rank - 1)],
                                  device="cpu", pin_memory=True).cuda(non_blocking=True)
             # index = torch.tensor([cp_rank, (2 * cp_size - cp_rank - 1)],
             #                      device="cpu") # .cuda(non_blocking=True)
             val = val.index_select(seq_dim, index)
-            val = val.view(*val.shape[0:seq_dim], -1, *val.shape[(seq_dim + 2) :])
+            val = val.view(*val.shape[0:seq_dim], -1, *val.shape[(seq_dim + 2):])
             batch[key] = val
 
     return batch
@@ -74,6 +109,14 @@ class FlashBatchFunction(object):
             if os.environ.get('ACCELERATOR_BACKEND', 'CUDA') != 'CUDA':
                 cu_seqlens = cu_seqlens.cpu()
             return (tokens, position_ids, attention_mask, cu_seqlens), (labels, loss_mask)
+
+
+@BATCH_FN_REGISTRY.register('flash_dpo_batch_pipe')
+class FlashDPOBatchFunction(FlashBatchFunction):
+    def __call__(self, data):
+        scores = dist_env.broadcast_data(['scores'], data, torch.float32)['scores'].float()
+        net_input, loss_input = super().__call__(data)
+        return net_input, loss_input + (scores, )
 
 
 @BATCH_FN_REGISTRY.register('mini_rlhf_json_batch_pipe')

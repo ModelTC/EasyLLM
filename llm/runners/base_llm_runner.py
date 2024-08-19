@@ -237,9 +237,12 @@ class BaseRunner(object):
                         self.start_iteration, self.lora_mode, self.cfg_lora)     # noqa
 
         # TODO hardcode fix torch load bugs
-        for k, v in self.optimizer.state_dict()['base_optimizer_state']['state'].items():
-            if 'step' in v:
-                v['step'] = v['step'].to(torch.cuda.current_device())
+        try:
+            for k, v in self.optimizer.state_dict()['base_optimizer_state']['state'].items():
+                if 'step' in v:
+                    v['step'] = v['step'].to(torch.cuda.current_device())
+        except Exception:
+            pass
         torch.distributed.barrier()
 
     def save_checkpoint(self, cur_iter):

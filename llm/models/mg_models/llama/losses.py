@@ -213,10 +213,12 @@ class MiniRLHFCrossEntropy(CrossEntropy):
 
 @LOSS_REGISTRY.register('dpo_loss')
 class DPOLoss(CrossEntropy):
-    def __init__(self, rlhf_weight=1.0, length_penalty=1.0, sentense_pairs=2, beta=0.1, loss_fn='sigmoid', reference_free=False, **kwargs):
+    def __init__(
+            self, rlhf_weight=1.0, pretrain_loss_weight=1.0, length_penalty=1.0, sentense_pairs=2, beta=0.1, loss_fn='sigmoid', reference_free=False, **kwargs):
         self.rlhf_weight = rlhf_weight
         self.length_penalty = length_penalty
         self.sentense_pairs = sentense_pairs
+        self.pretrain_loss_weight = pretrain_loss_weight
         self.ignore_idx = -100
         self.loss_fn = loss_fn
         self.beta = beta
@@ -303,7 +305,7 @@ class DPOLoss(CrossEntropy):
         if ref_logps[0] > 1.:
             assert len(ref_logps) == 2  # only support micro_bs=1
             sft_loss = self._sft_loss(output, labels, loss_mask)
-            return sft_loss
+            return sft_loss * self.pretrain_loss_weight
 
         output = dist_env.gather_from_tensor_model_parallel_region(output)
 
@@ -317,3 +319,68 @@ class DPOLoss(CrossEntropy):
 
         loss, chosen_rewards, rejected_rewards = self._loss(plcy_yw_logps, plcy_yl_logps, ref_yw_logps, ref_yl_logps)
         return loss
+
+
+@LOSS_REGISTRY.register('packed_dpo_loss')
+class PackedDPOLoss(DPOLoss):
+    def __init__(self, *args, pretrain_loss_weight=1.0, nll_loss_weight=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pretrain_loss_weight = pretrain_loss_weight
+        self.nll_loss_weight = nll_loss_weight
+
+    def __call__(self, output, orig_labels):
+        labels, loss_mask, cum_seqlen, ref_logps = orig_labels[:4]
+        if ref_logps[0, 0] > 1.:
+            assert (ref_logps > 1.).all()
+            return self.pretrain_loss_weight * super(DPOLoss, self).__call__(output, (labels, loss_mask, cum_seqlen))
+        # print(f'output.shape: {output.shape}')
+        assert output.size(0) == 1, 'Only support micro batch size=1'
+        assert len(cum_seqlen) % 2 == 1
+        loss_mask = labels != self.ignore_idx
+        logps = self._gather_logps(output, labels.clone())
+        loss = 0.
+        for i in range(1, len(cum_seqlen), 2):
+            start_w = cum_seqlen[i - 1]
+            end_w = cum_seqlen[i]
+            start_l = cum_seqlen[i]
+            end_l = cum_seqlen[i + 1]
+            logps_w = logps[:, start_w:end_w]
+            logps_l = logps[:, start_l:end_l]
+            loss_mask_w = loss_mask[:, start_w:end_w]
+            loss_mask_l = loss_mask[:, start_l:end_l]
+            ref_yw_logps = ref_logps[:, i - 1]
+            ref_yl_logps = ref_logps[:, i]
+            plcy_yw_logps = self._get_batch_logps_dist(logps_w, loss_mask_w)
+            plcy_yl_logps = self._get_batch_logps_dist(logps_l, loss_mask_l)
+            if self.reference_free:
+                ref_yw_logps = 0
+                ref_yl_logps = 0
+            loss_, rd_w, rw_l = self._loss(plcy_yw_logps, plcy_yl_logps, ref_yw_logps, ref_yl_logps)
+            loss += loss_
+            if self.nll_loss_weight > 0:
+                # Add chosen answer's nll loss to the total loss
+                num_tokens = self.get_expected_number_of_tokens(labels[:, start_w:end_w], loss_mask[:, start_w:end_w])[0]
+                nll_loss = - plcy_yw_logps.sum() / num_tokens  # sum over batch dim (=1)
+                loss += nll_loss * self.nll_loss_weight
+        normalizer = len(cum_seqlen) // 2
+        return loss / normalizer
+
+    def _gather_logps(self, logits, labels):
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+        # dummy token; we'll ignore the losses on these tokens later
+        labels[labels == self.ignore_idx] = 0
+        loss = vocab_parallel_cross_entropy(logits.contiguous().float(), labels, self.cut_size)
+        return -loss
+
+    def _get_batch_logps_dist(
+        self,
+        per_token_logps: torch.FloatTensor,
+        loss_mask: torch.LongTensor,
+        average_log_prob: bool = False,
+    ) -> torch.FloatTensor:
+        assert per_token_logps.shape == loss_mask.shape, f'per_token_logps.shape: {per_token_logps.shape},  loss_mask.shape: {loss_mask.shape}'
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)

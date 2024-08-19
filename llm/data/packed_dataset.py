@@ -46,8 +46,8 @@ class PackedDataset(Dataset):
         self.preprocess()
         logger.info("Preprocess dataset successed")
         self.seed = DEFAULT_SEED
-        self.pack_group = self.process_random_groups(self.tokens_lengths, packed_length, packed_length_thresh, iter_time) # noqa
-        self.num_tokens = sum(self.lengths)
+        self.pack_group = self.process_random_groups(self.tokens_lengths, packed_length, packed_length_thresh, iter_time)  # noqa
+        self.num_tokens = sum(np.array(self.lengths)[:, 1])
         if dist_env.get_data_parallel_rank() == 0 and dist_env.get_pipeline_model_parallel_rank() == 0:
             self.display_groups_info(display_bin_size)
 
@@ -143,9 +143,9 @@ class PackedDataset(Dataset):
             with Pool(self.worker) as p:
                 _ = p.map(decode_text, origin_indexs[:])
             for idx in range(len(self.dataset)):
-                self.lengths.append(lengths_dict[idx])
+                self.lengths.append([idx, lengths_dict[idx]])
             from llm.utils.env import dist_env
-            if dist_env.get_data_parallel_rank() == 0 and dist_env.get_tensor_model_parallel_rank() == 0 and dist_env.get_pipeline_model_parallel_rank() == 0: # noqa
+            if dist_env.get_data_parallel_rank() == 0 and dist_env.get_tensor_model_parallel_rank() == 0 and dist_env.get_pipeline_model_parallel_rank() == 0:  # noqa
                 np.save(self.length_path, self.lengths)
         self.tokens_lengths = self.lengths
 
@@ -182,3 +182,28 @@ class PackedDataset(Dataset):
         # without additional consideration of sos or eos
         n_packs = len(self.pack_group)
         return n_packs
+
+
+@DATASET_REGISTRY.register("packed_dpo")
+class PackedDPODataset(PackedDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, item: int):
+        data = super().__getitem__(item)
+        group = self.pack_group[item]
+        cu_seqlens = [0]
+        position_ids = []
+        scores = []
+        for g in group:
+            index = g[0]
+            meta = self.dataset.__getitem__(index)
+            cu_seqlens.extend(torch.diff(meta['cu_seqlens']).tolist())  # reverse cu_seqlens to seqlens
+            position_ids.append(meta['position_ids'])
+            scores.append(meta['scores'])
+        cu_seqlens = np.cumsum(np.array(cu_seqlens)).tolist()
+        cu_seqlens = torch.clamp(torch.LongTensor(cu_seqlens), max=self.packed_length)
+        position_ids = torch.LongTensor(torch.cat(position_ids, dim=0))[:self.packed_length]
+        scores = torch.cat(scores)
+        data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids, "scores": scores})
+        return data

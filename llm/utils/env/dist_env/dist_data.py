@@ -65,6 +65,8 @@ def _build_key_size_numel_dictionaries(keys, data):
             size.append(this_size)
             numel *= this_size
             i += 1
+            if offset + i >= len(sizes_cpu):
+                print(f'Error! keys: {keys}, sizes: {sizes_cpu}')
         key_size[key] = size
         key_numel[key] = numel
         total_numel += numel

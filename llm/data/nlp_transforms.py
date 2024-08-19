@@ -347,7 +347,7 @@ class InternToolParser(object):
                 last_dialog_index = len(tokens)
 
         if self.inference_mode:
-            infer_tokens_assistant_prompt = self.tokenizer(f"{self.conversation_start}assistant\n", return_attention_mask=False, add_special_tokens=False)['input_ids'] # noqa
+            infer_tokens_assistant_prompt = self.tokenizer(f"{self.conversation_start}assistant\n", return_attention_mask=False, add_special_tokens=False)['input_ids']  # noqa
             tokens.extend(infer_tokens_assistant_prompt)
             labels.extend([self.ignore_index] * len(infer_tokens_assistant_prompt))
             return tokens, []
@@ -444,7 +444,7 @@ class BaseParser(object):
         if self.prompt_type == "empty":
             prompt = raw_input_text
         elif self.prompt_type == "llama":
-            prompt = f"Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n\n{raw_input_text}\n\n### Response:\n\n" # noqa
+            prompt = f"Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n\n{raw_input_text}\n\n### Response:\n\n"  # noqa
         elif self.prompt_type == "qwen":
             # pre_system = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>"
             # prompt = f"\n<|im_start|>user\n{raw_input_text}<|im_end|>\n<|im_start|>assistant\n"
@@ -916,6 +916,7 @@ class CombinedGeneralChatParser(EnglishGeneralChatParser):
         - last_answer_parser: only train last answer
         - keep_all_parser: keeps all keys containing answers and questions
     """
+
     def __init__(self,
                  tokenizer,
                  max_seq_length,
@@ -1323,6 +1324,259 @@ class QWenVLParser(SimpleChatParser):
         labels_answer = [self.im_start] + [self.ignore_index] * len(self.tokenizer("<|im_start|>assistant").input_ids) + \
             tokens_answer[len(self.tokenizer("<|im_start|>assistant").input_ids) + 1:-2] + [self.im_end] + self.nl_tokens
         return tokens_answer, labels_answer
+
+
+@PARSER_REGISTRY.register('multiturnpreprocess')
+class MultiTurnPreProcessParser(object):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 ignore_index=-100,
+                 only_last_answer=False,
+                 keep_all_keys=False,
+                 inference_mode=False,
+                 process_oversize=True,
+                 drop_meta=False,
+                 suffix="<|im_end|>",
+                 suffix_as_eos=True,
+                 sep='\n',
+                 remap_flag=False,
+                 **kwargs):
+        self.tokenizer = tokenizer
+        self.ignore_index = ignore_index
+        self.keep_all_keys = keep_all_keys
+        self.max_seq_length = max_seq_length
+        self.inference_mode = inference_mode
+        self.process_oversize = process_oversize
+        self.drop_meta = drop_meta
+        self.suffix = suffix
+        self.suffix_as_eos = suffix_as_eos
+        self.sep = sep
+        self.remap_flag = remap_flag
+        self.only_last_answer = only_last_answer
+        self.token_mapping = {
+            "<|im_start|>": "[UNUSED_TOKEN_146]",
+            "<|im_end|>": "[UNUSED_TOKEN_145]",
+            "<|action_start|>": "[UNUSED_TOKEN_144]",
+            "<|action_end|>": "[UNUSED_TOKEN_143]",
+            "<|interpreter|>": "[UNUSED_TOKEN_142]",
+            "<|plugin|>": "[UNUSED_TOKEN_141]"
+        }
+
+    def remap_text(self, text):
+        if not self.remap_flag:
+            return text
+        new_text = text
+        for k, v in self.token_mapping.items():
+            new_text = new_text.replace(k, v)
+        return new_text
+
+    def __call__(self, example):
+        bos_token_id = self.tokenizer.bos_token_id
+        eos_token_id = self.tokenizer.eos_token_id
+        if isinstance(bos_token_id, int):
+            bos_token_id = [bos_token_id]
+        if isinstance(eos_token_id, int):
+            eos_token_id = [eos_token_id]
+        if not isinstance(example['conversation'], list):
+            example['conversation'] = [example['conversation']]
+        input_ids_with_output = True
+
+        input_ids, labels = [], []
+        next_needs_bos_token = True
+        for i, single_turn_conversation in enumerate(example['conversation']):
+            input = single_turn_conversation['input']
+            input = self.remap_text(input)
+            input_encode = self.tokenizer.encode(input, return_attention_mask=False, add_special_tokens=False)
+            if next_needs_bos_token:
+                input_ids += bos_token_id
+                labels += [self.ignore_index] * len(bos_token_id)
+            input_ids += input_encode
+            labels += [self.ignore_index] * len(input_encode)
+            if input_ids_with_output:
+                # Add output (with loss)
+                output = single_turn_conversation['output']
+                if self.suffix != '':
+                    output += self.suffix
+                output = self.remap_text(output)
+                output_encode = self.tokenizer.encode(output, return_attention_mask=False, add_special_tokens=False)
+                input_ids += output_encode
+                if self.only_last_answer and i < len(example['conversation']) - 1:
+                    labels += [self.ignore_index] * len(output_encode)
+                else:
+                    labels += copy.deepcopy(output_encode)
+                # Add EOS_TOKEN (with loss)
+                if not self.suffix_as_eos:
+                    next_needs_bos_token = True
+                    input_ids += eos_token_id
+                    if self.only_last_answer and i < len(example['conversation']) - 1:
+                        labels += [self.ignore_index] * len(eos_token_id)
+                    else:
+                        labels += copy.deepcopy(eos_token_id)
+                else:
+                    next_needs_bos_token = False
+                # Add SEP (without loss)
+                if self.sep != '':
+                    sep_encode = self.tokenizer.encode(self.sep, return_attention_mask=False, add_special_tokens=False)
+                    input_ids += sep_encode
+                    labels += [self.ignore_index] * len(sep_encode)
+
+        if self.process_oversize:
+            if len(input_ids) > self.max_seq_length:
+                if self.drop_meta:
+                    return None
+                # input_ids = input_ids[:self.max_seq_length]
+                # labels = labels[:self.max_seq_length]
+                # drop question to avoid no loss
+                input_ids = input_ids[-self.max_seq_length:]
+                labels = labels[-self.max_seq_length:]
+        if len(input_ids) == 0 or len(labels) == 0:
+            return None
+        input_ids = torch.LongTensor(input_ids)
+        if self.keep_all_keys:
+            labels = input_ids.clone()
+        else:
+            labels = torch.LongTensor(labels)
+        # labels = torch.LongTensor(labels)
+        return {'input_ids': input_ids, 'labels': labels}
+
+
+@PARSER_REGISTRY.register('combine_multiturnpreprocess')
+class CombinedMultiTurnPreProcessParser(MultiTurnPreProcessParser):
+    """
+    args are consistent with MultiTurnPreProcessParser
+    Combines the output of general_chat parsers in several conditions:
+        - default_parser: parameters given in the yaml config file
+        - last_answer_parser: only train last answer
+        - keep_all_parser: keeps all keys containing answers and questions
+    """
+
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 **kwargs):
+        # self.default_parser = MultiTurnPreProcessParser(**kwargs)
+
+        super().__init__(tokenizer, max_seq_length, **kwargs)  # default parser is self
+
+        updated_kwargs = dict(kwargs)
+        updated_kwargs.update({'only_last_answer': True, 'keep_all_keys': False})
+        self.last_answer_parser = MultiTurnPreProcessParser(tokenizer, max_seq_length, **updated_kwargs)
+
+        updated_kwargs.update({'only_last_answer': False, 'keep_all_keys': True})
+        self.keep_all_parser = MultiTurnPreProcessParser(tokenizer, max_seq_length, **updated_kwargs)
+
+    def __call__(self, meta):
+        # meta type 1: [convs]
+        # meta type 2: {keep_all_keys: True, convs:[convs]}
+        # meta type 3: {only_last_answer: True, convs:[convs]}
+        assert isinstance(meta, dict)
+        if meta.get('keep_all_keys', False):
+            return self.keep_all_parser(meta["convs"])
+        elif meta.get('only_last_answer', False):
+            return self.last_answer_parser(meta["convs"])
+        else:
+            return super().__call__(meta)
+
+
+@PARSER_REGISTRY.register('combine_dpo_multiturnpreprocess')
+class CombinedDPOMultiTurnSFTParser(CombinedMultiTurnPreProcessParser):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 inference_mode=False,
+                 average_log_prob=False,
+                 **kwargs):
+        self.average_log_prob = average_log_prob
+        assert inference_mode is False, 'dpo_rlhf parser does not support model inference'
+        updated_kwargs = dict(kwargs)
+        updated_kwargs.update({'inference_mode': inference_mode})
+        super().__init__(tokenizer, max_seq_length, **kwargs)
+
+    def parse_sft_pairs(self, meta):
+        assert isinstance(meta['yw'], list) or isinstance(meta['yw'], dict)
+        yw_res = super().__call__(meta['yw'])
+        yl_res = super().__call__(meta['yl'])
+        if yw_res is None or yl_res is None:
+            return None
+        yw_tokens, yw_labels = yw_res['input_ids'], yw_res['labels']
+        yl_tokens, yl_labels = yl_res['input_ids'], yl_res['labels']
+        results = {'input_ids': [yw_tokens, yl_tokens], 'labels': [yw_labels, yl_labels], 'scores': torch.FloatTensor([999999, 999999])}
+        return results
+
+    def parse_dpo_pairs(self, meta):
+        # DPO meta: {'yw':[convs], 'yl':[convs], 'yw_logp':[logp][1:], 'yl_logp':[logp][1:]}  only support one yw and one yl
+        yw_res = super().__call__({"convs": meta['yw'], "keep_all_keys": False, "only_last_answer": True})
+        yl_res = super().__call__({"convs": meta['yl'], "keep_all_keys": False, "only_last_answer": True})
+        if yw_res is None or yl_res is None:
+            return None
+        yw_tokens, yw_labels = yw_res['input_ids'], yw_res['labels']
+        yl_tokens, yl_labels = yl_res['input_ids'], yl_res['labels']
+        yw_logp = torch.FloatTensor(meta['yw_logp'])
+        yl_logp = torch.FloatTensor(meta['yl_logp'])
+        yw_mask = yw_labels != self.ignore_index
+        yl_mask = yl_labels != self.ignore_index
+
+        if self.average_log_prob:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1) / yw_mask[1:].sum(-1)  # LLMs output the probobilities from the second token
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1) / yl_mask[1:].sum(-1)
+        else:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1)
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1)
+
+        results = {'input_ids': [yw_tokens, yl_tokens], 'labels': [yw_labels, yl_labels], 'scores': torch.FloatTensor([yw_score, yl_score])}
+        return results
+
+    def __call__(self, meta):
+        yw_logp = torch.FloatTensor(meta['yw_logp'])
+        if len(yw_logp) == 1 and yw_logp[0] >= 1:  # log prob>0 means it's sft data
+            return self.parse_sft_pairs(meta)
+        else:
+            return self.parse_dpo_pairs(meta)
+
+
+@PARSER_REGISTRY.register('dpo_multiturnpreprocess')
+class DPOParser(MultiTurnPreProcessParser):
+    def __init__(self,
+                 tokenizer,
+                 max_seq_length,
+                 average_log_prob=False,
+                 **kwargs):
+        self.average_log_prob = average_log_prob
+        assert not kwargs.get('inference_mode', False), 'dpo_rlhf parser does not support model inference'
+        assert kwargs.get('only_last_answer', False), 'dpo_rlhf parser only supports last answer'
+        assert not kwargs.get('keep_all_keys', False), 'dpo_rlhf parser does not support keep all keys'
+        super().__init__(tokenizer, max_seq_length, **kwargs)
+
+    def __call__(self, meta):
+        # DPO meta: {'yw':[convs], 'yl':[convs], 'yw_logp':[logp][1:], 'yl_logp':[logp][1:]}  only support one yw and one yl
+        yw_res = super().__call__(meta['yw'])
+        yl_res = super().__call__(meta['yl'])
+        if yw_res is None or yl_res is None:
+            return None
+        yw_tokens, yw_labels = yw_res['input_ids'], yw_res['labels']
+        yl_tokens, yl_labels = yl_res['input_ids'], yl_res['labels']
+        yw_logp = torch.FloatTensor(meta['yw_logp'])
+        yl_logp = torch.FloatTensor(meta['yl_logp'])
+        yw_mask = yw_labels != self.ignore_index
+        yl_mask = yl_labels != self.ignore_index
+
+        if self.average_log_prob:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1) / yw_mask[1:].sum(-1)  # LLMs output the probobilities from the second token
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1) / yl_mask[1:].sum(-1)
+        else:
+            yw_score = (yw_logp * yw_mask[1:]).sum(-1)
+            yl_score = (yl_logp * yl_mask[1:]).sum(-1)
+
+        cu_seqlens = [0, len(yw_tokens), len(yl_tokens)]
+        position_ids = [list(range(len(yw_tokens))), list(range(len(yl_tokens)))]
+        cu_seqlens = np.cumsum(np.array(cu_seqlens)).tolist()
+        input_ids = torch.cat([yw_tokens, yl_tokens], dim=0)
+        labels = torch.cat([yw_labels, yl_labels], dim=0)
+        cu_seqlens = torch.LongTensor(cu_seqlens)
+        position_ids = torch.cat([torch.LongTensor(pos) for pos in position_ids], dim=0)
+        scores = torch.FloatTensor([yw_score, yl_score])
+        return {'input_ids': input_ids, 'labels': labels, 'scores': scores, 'cu_seqlens': cu_seqlens, 'position_ids': position_ids}
 
 
 @AUGMENTATION_REGISTRY.register('sense_tokenization')
