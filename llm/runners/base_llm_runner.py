@@ -6,6 +6,7 @@ import torch
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from tqdm import tqdm
 import json
+import copy
 
 import deepspeed
 from llm.utils.env import dist_env
@@ -38,10 +39,19 @@ _TRAIN_START_TIME = time.time()
 class BaseRunner(object):
     def __init__(self, args, cfg=None, training=True, base_type='train'):
         self.args = args
-        self.config = cfg
+        self.config = copy.deepcopy(cfg)
         self.training = training
         self.base_type = base_type
         self.build()
+        self.display_train_info(cfg)
+
+    def display_train_info(self, cfg):
+        logger.info(json.dumps(cfg, indent=4))
+        dp_size = dist_env.get_data_parallel_world_size()
+        tp_size = dist_env.get_tensor_model_parallel_world_size()
+        pp_size = dist_env.get_pipeline_model_parallel_world_size()
+        dist_info = f"dp size: {dp_size}; tp_size: {tp_size}; pp_size: {pp_size}"
+        logger.info(dist_info)
 
     def build(self):
         self.set_param_components()
