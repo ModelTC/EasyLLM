@@ -113,20 +113,61 @@ class InternvlHFCollector(BatchAlignCollector):
                 max_item_length = max(length_list)
                 instances = [instances[0][rank]]
             else:
-                instance = instances[0][0]
+                instance = instances[0][0] if isinstance(instances[0], list) else instances[0]
                 length = len(instance['input_ids'])
                 max_item_length = math.ceil(length / float(self.alignment)) * self.alignment
                 temp_input_ids = torch.LongTensor([pad_id] * max_item_length)
                 temp_input_ids[:length] = instance['input_ids']
                 temp_labels = torch.LongTensor([IGNORE_INDEX] * max_item_length)
                 temp_labels[:length] = instance['labels']
+                if 'position_ids' not in instance:
+                    instance['position_ids'] = torch.LongTensor(list(range(len(instance['input_ids']))))
+                    instance['cu_seqlens'] = torch.LongTensor([0, len(instance['input_ids'])])
                 temp_position_ids = torch.LongTensor([0] * max_item_length)
                 temp_position_ids[:length] = instance['position_ids']
                 instance['cu_seqlens'][-1] = max_item_length
 
-                instance['input_ids'] = self.split_for_sp(temp_input_ids, max_item_length, 0, rank)
-                instance['labels'] = self.split_for_sp(temp_labels, max_item_length, 0, rank)
-                instance['position_ids'] = self.split_for_sp(temp_position_ids, max_item_length, 0, rank)
+                num_image = instance.pop('num_image', None)
+                if num_image is None:
+                    instance['input_ids'] = self.split_for_sp(temp_input_ids, max_item_length, 0, rank)
+                    instance['labels'] = self.split_for_sp(temp_labels, max_item_length, 0, rank)
+                    instance['position_ids'] = self.split_for_sp(temp_position_ids, max_item_length, 0, rank)
+                else:
+                    num_image = instance['pixel_values'].shape[0]
+                    if num_image % self.sp_num != 0:
+                        from PIL import Image
+                        import torchvision.transforms as T
+                        from torchvision.transforms.functional import InterpolationMode
+                        num_pad_image = self.sp_num - num_image % self.sp_num
+                        _, _, h, w = instance['pixel_values'].shape
+
+                        transform = T.Compose([
+                            T.Resize((w, h), interpolation=InterpolationMode.BICUBIC),
+                            T.ToTensor(),
+                            T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+                        ])
+
+                        pad_images = []
+                        pad_images_flages = []
+                        for i in range(num_pad_image):
+                            fake_img = Image.new('RGB', (224, 224), (255, 255, 255))
+                            fake_img = transform(fake_img)
+                            pad_images.append(fake_img)
+                            pad_images_flages.append(0)
+
+                        pad_images = torch.stack(pad_images)
+                        pad_images_flages = torch.tensor(pad_images_flages, dtype=torch.long)
+                        instance['pixel_values'] = torch.cat([instance['pixel_values'],
+                                                              pad_images], dim=0)
+                        instance['image_flags'] = torch.cat([instance['image_flags'],
+                                                             pad_images_flages], dim=0)
+
+                    instance['input_ids'] = temp_input_ids
+                    instance['labels'] = temp_labels
+                    instance['position_ids'] = temp_position_ids
+                    instance['pixel_values'] = self.split_for_sp(instance['pixel_values'],
+                                                                 instance['pixel_values'].shape[0], 0, rank)
+
                 max_item_length = len(instance['input_ids'])
                 instances = [instance]
 

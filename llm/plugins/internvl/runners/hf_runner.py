@@ -317,6 +317,7 @@ class MLLMHFRunner(HFRunner):
                                         labels=batch['labels'],
                                         pixel_values=batch['pixel_values'].to(self.dtype),
                                         image_flags=batch['image_flags'],
+                                        position_ids=batch["position_ids"],
                                         return_dict=True,
                                         use_cache=False)
 

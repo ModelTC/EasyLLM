@@ -27,8 +27,8 @@ def build_model(**cfg):
             # llm = LlamaForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
         elif llm_config.model_type == 'internlm2':
             llm_config.attn_implementation = "flash_attention_2"
-            # llm = InternLM2ForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
-            llm = InternLM2ForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
+            llm = InternLM2ForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
+            # llm = InternLM2ForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
         else:
             from transformers import AutoModelForCausalLM
             llm = AutoModelForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)

@@ -625,7 +625,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
             cu_seqlens_offset[:-1] = cu_seqlens[1:]
             max_seqlen = max(cu_seqlens_offset[:-1] - cu_seqlens[:-1]).item()
 
-            if get_sequence_parallel_world_size() > 1 and max_seqlen > 30000:
+            if get_sequence_parallel_world_size() > 1 and cu_seqlens.shape[0] < 3:
                 attn_output = flash_attn_varlen_func_seq(
                     query_states,
                     key_states,

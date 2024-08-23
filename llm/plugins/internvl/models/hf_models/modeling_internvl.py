@@ -9,8 +9,10 @@ from typing import List, Optional, Tuple, Union
 import torch.utils.checkpoint
 from .modeling_internlm2 import InternLM2ForCausalLM
 from peft import LoraConfig, get_peft_model
+import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
+import torch.distributed as dist
 from transformers import GenerationConfig, LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
@@ -20,6 +22,9 @@ from .configuration_internvl_chat import InternVLChatConfig
 from .modeling_intern_vit import InternVisionModel
 from .modeling_eva_vit import EvaCLIPVisionModel
 # from ...datas.conversation import get_conv_template
+from llm.models.hf_models.sequence import (get_sequence_parallel_world_size,
+                                           get_sequence_parallel_rank,
+                                           get_sequence_parallel_group)
 
 
 logger = logging.get_logger(__name__)
@@ -124,6 +129,10 @@ class InternVLChatModel(PreTrainedModel):
         if config.use_llm_lora:
             self.wrap_llm_lora(r=config.use_llm_lora, lora_alpha=2 * config.use_llm_lora)
 
+        self.SP_SIZE = get_sequence_parallel_world_size()
+        self.SP_RANK = get_sequence_parallel_rank()
+        self.SP_GROUP = get_sequence_parallel_group()
+
     def wrap_backbone_lora(self, r=128, lora_alpha=256, lora_dropout=0.05):
         lora_config = LoraConfig(
             r=r,
@@ -146,6 +155,10 @@ class InternVLChatModel(PreTrainedModel):
         self.language_model = get_peft_model(self.language_model, lora_config)
         self.language_model.enable_input_require_grads()
         self.language_model.print_trainable_parameters()
+
+    def split_for_sp(self, tensor, size, dim, rank):
+        tensor_list = torch.split(tensor, size // self.SP_SIZE, dim=dim)
+        return tensor_list[rank].contiguous()
 
     def forward(
             self,
@@ -170,6 +183,11 @@ class InternVLChatModel(PreTrainedModel):
 
         # if image_flags.sum() != 0:
         vit_embeds = self.extract_feature(pixel_values)
+        if len(image_flags) != pixel_values.shape[0] and self.SP_SIZE > 1:
+            vit_embeds_list = [torch.zeros_like(vit_embeds) for _ in range(self.SP_SIZE)]
+            dist.all_gather(vit_embeds_list, vit_embeds, group=self.SP_GROUP)
+            vit_embeds = torch.cat(vit_embeds_list, dim=0)
+
         vit_embeds = vit_embeds[image_flags == 1]
         B, N, C = input_embeds.shape
         input_embeds = input_embeds.reshape(B * N, C)
@@ -186,6 +204,13 @@ class InternVLChatModel(PreTrainedModel):
             n_token = min(selected.sum(), vit_embeds.shape[0])
             selected = selected[:n_token]
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds[:n_token]
+
+        if len(image_flags) != pixel_values.shape[0] and self.SP_SIZE > 1:
+            length = input_embeds.shape[0]
+            input_embeds = self.split_for_sp(input_embeds, length, 0, self.SP_RANK)
+            labels = self.split_for_sp(labels, length, 1, self.SP_RANK)
+            position_ids = self.split_for_sp(position_ids, length, 1, self.SP_RANK)
+            N = N // self.SP_SIZE
 
         input_embeds = input_embeds.reshape(B, N, C)
         # else:

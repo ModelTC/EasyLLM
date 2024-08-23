@@ -194,88 +194,167 @@ class InternvlToolParser(object):
 
     def __call__(self, meta):
         if "image" in meta:
-            if self.read_img:
+            if not isinstance(meta['image'], list):
+                if self.read_img:
+                    # TODO: read image in ceph
+                    img_dir = meta["img_dir"]
+                    is_train = meta["data_augment"]
+                    img_path = os.path.join(img_dir, meta['image'])
+                    image = Image.open(img_path).convert('RGB')
+
+                    img_transform = self.build_img_transform(is_train=is_train, input_size=self.image_size, pad2square=self.pad2square)
+                    if self.dynamic_image_size:
+                        images = self.dynamic_preprocess(image, min_num=self.min_dynamic_patch, max_num=self.max_dynamic_patch,
+                                                         image_size=self.image_size, use_thumbnail=self.use_thumbnail)
+                    else:
+                        images = [image]
+
+                    pixel_values = [img_transform(image) for image in images]
+                    pixel_values = torch.stack(pixel_values)
+                    num_patches = pixel_values.size(0)
+                else:
+                    # for count length
+                    orig_width, orig_height = meta["width"], meta["height"]
+                    num_patches = self.get_num_patchs(orig_width,
+                                                      orig_height,
+                                                      min_num=self.min_dynamic_patch,
+                                                      max_num=self.max_dynamic_patch,
+                                                      image_size=self.image_size,
+                                                      use_thumbnail=self.use_thumbnail)
+                    pixel_values = torch.empty((num_patches, 3, self.image_size, self.image_size))
+                if not self.dynamic_image_size:
+                    assert num_patches == 1, f'The number of patches should be 1, but got {num_patches}.'
+
+                conversations = meta['conversations']
+                if '<image>' not in conversations[0]['value']:
+                    conversations[0]['value'] = '<image>\n' + conversations[0]['value']
+
+                # fix bug when there are multiple <image> in conversations
+                image_cnt = 0
+                for idx, conv in enumerate(conversations):
+                    conv['value'] = conv['value'].replace('<image>\n', '').replace('\n<image>', '').replace('<image>', '')
+                    if idx == 0:
+                        conv['value'] = '<image>\n' + conv['value']
+                    image_cnt += conv['value'].count('<image>')
+                assert image_cnt == 1, f'There should be exactly one <image> in the conversation, but got {image_cnt}'
+
+                roles = {'human': 'user', 'gpt': 'assistant'}
+                tokens = []
+                labels = []
+
+                tokens.extend([self.tokenizer.bos_token_id])
+                labels.extend([self.ignore_index])
+                image_tokens = f'{self.img_start_token}{self.img_content_token * self.num_image_token * num_patches}{self.img_end_token}'
+                if roles[conversations[0]['from']] != 'user':
+                    conversations = conversations[1:]
+                for conv in conversations:
+                    content = conv['value'].strip()
+                    if content[0] == '\n':
+                        content = content[1:]
+                    if '<image>' in content:
+                        content = content.replace('<image>', image_tokens)
+                    if roles[conv['from']] == 'user':
+                        user_info = f"{self.conversation_start}user\n{content}{self.conversation_end}\n"
+                        tokenized_user = self.tokenizer(user_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokenized_user)
+                        labels.extend([self.ignore_index] * len(tokenized_user))
+                    elif roles[conv['from']] == 'assistant':
+                        assis_start = f"{self.conversation_start}assistant\n"
+                        tokens_assistant_start = self.tokenizer(assis_start, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokens_assistant_start)
+                        labels.extend([self.ignore_index] * len(tokens_assistant_start))
+
+                        assis_info = f"{content}{self.conversation_end}\n"
+                        tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokenized_assistant)
+                        labels.extend(copy.deepcopy(tokenized_assistant))
+                    else:
+                        raise NotImplementedError(f"Not Support the role {roles[conv['from']]}!")
+
+                input_ids = torch.LongTensor(tokens)
+                labels = torch.LongTensor(labels)
+                return {'input_ids': input_ids,
+                        'labels': labels,
+                        'pixel_values': pixel_values,
+                        'image_flags': torch.tensor([1] * num_patches, dtype=torch.long)}
+            else:
                 # TODO: read image in ceph
                 img_dir = meta["img_dir"]
                 is_train = meta["data_augment"]
-                img_path = os.path.join(img_dir, meta['image'])
-                image = Image.open(img_path).convert('RGB')
+                image_list = meta['image']
+                images, num_tiles = [], []
+                for image_path in image_list:
+                    img_path = os.path.join(img_dir, image_path)
+                    image = Image.open(img_path).convert('RGB')
 
-                img_transform = self.build_img_transform(is_train=is_train, input_size=self.image_size, pad2square=self.pad2square)
-                if self.dynamic_image_size:
-                    images = self.dynamic_preprocess(image, min_num=self.min_dynamic_patch, max_num=self.max_dynamic_patch,
-                                                     image_size=self.image_size, use_thumbnail=self.use_thumbnail)
-                else:
-                    images = [image]
+                    img_transform = self.build_img_transform(is_train=is_train, input_size=self.image_size, pad2square=self.pad2square)
+                    if self.dynamic_image_size:
+                        image = self.dynamic_preprocess(image, min_num=self.min_dynamic_patch, max_num=self.max_dynamic_patch,
+                                                        image_size=self.image_size, use_thumbnail=self.use_thumbnail)
+                        images += image
+                        num_tiles.append(len(image))
+                    else:
+                        images.append(image)
+                        num_tiles.append(1)
 
                 pixel_values = [img_transform(image) for image in images]
                 pixel_values = torch.stack(pixel_values)
                 num_patches = pixel_values.size(0)
-            else:
-                # for count length
-                orig_width, orig_height = meta["width"], meta["height"]
-                num_patches = self.get_num_patchs(orig_width,
-                                                  orig_height,
-                                                  min_num=self.min_dynamic_patch,
-                                                  max_num=self.max_dynamic_patch,
-                                                  image_size=self.image_size,
-                                                  use_thumbnail=self.use_thumbnail)
-                pixel_values = torch.empty((num_patches, 3, self.image_size, self.image_size))
-            if not self.dynamic_image_size:
-                assert num_patches == 1, f'The number of patches should be 1, but got {num_patches}.'
 
-            conversations = meta['conversations']
-            if '<image>' not in conversations[0]['value']:
-                conversations[0]['value'] = '<image>\n' + conversations[0]['value']
+                conversations = meta['conversations']
 
-            # fix bug when there are multiple <image> in conversations
-            image_cnt = 0
-            for idx, conv in enumerate(conversations):
-                conv['value'] = conv['value'].replace('<image>\n', '').replace('\n<image>', '').replace('<image>', '')
-                if idx == 0:
-                    conv['value'] = '<image>\n' + conv['value']
-                image_cnt += conv['value'].count('<image>')
-            assert image_cnt == 1, f'There should be exactly one <image> in the conversation, but got {image_cnt}'
+                # assert <image> in conversations
+                image_cnt = 0
+                for conv in conversations:
+                    image_cnt += conv['value'].count('<image>')
+                if image_cnt == 0:
+                    conversations[0]['value'] = '<image>\n' + conversations[0]['value']
 
-            roles = {'human': 'user', 'gpt': 'assistant'}
-            tokens = []
-            labels = []
+                roles = {'human': 'user', 'gpt': 'assistant'}
+                tokens = []
+                labels = []
 
-            tokens.extend([self.tokenizer.bos_token_id])
-            labels.extend([self.ignore_index])
-            image_tokens = f'{self.img_start_token}{self.img_content_token * self.num_image_token * num_patches}{self.img_end_token}'
-            if roles[conversations[0]['from']] != 'user':
-                conversations = conversations[1:]
-            for conv in conversations:
-                content = conv['value'].strip()
-                if content[0] == '\n':
-                    content = content[1:]
-                if '<image>' in content:
-                    content = content.replace('<image>', image_tokens)
-                if roles[conv['from']] == 'user':
-                    user_info = f"{self.conversation_start}user\n{content}{self.conversation_end}\n"
-                    tokenized_user = self.tokenizer(user_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
-                    tokens.extend(tokenized_user)
-                    labels.extend([self.ignore_index] * len(tokenized_user))
-                elif roles[conv['from']] == 'assistant':
-                    assis_start = f"{self.conversation_start}assistant\n"
-                    tokens_assistant_start = self.tokenizer(assis_start, return_attention_mask=False, add_special_tokens=False)['input_ids']
-                    tokens.extend(tokens_assistant_start)
-                    labels.extend([self.ignore_index] * len(tokens_assistant_start))
+                tokens.extend([self.tokenizer.bos_token_id])
+                labels.extend([self.ignore_index])
+                num_image_tokens = [self.num_image_token * num_tile for num_tile in num_tiles]
 
-                    assis_info = f"{content}{self.conversation_end}\n"
-                    tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
-                    tokens.extend(tokenized_assistant)
-                    labels.extend(copy.deepcopy(tokenized_assistant))
-                else:
-                    raise NotImplementedError(f"Not Support the role {roles[conv['from']]}!")
+                if roles[conversations[0]['from']] != 'user':
+                    conversations = conversations[1:]
 
-            input_ids = torch.LongTensor(tokens)
-            labels = torch.LongTensor(labels)
-            return {'input_ids': input_ids,
-                    'labels': labels,
-                    'pixel_values': pixel_values,
-                    'image_flags': torch.tensor([1] * num_patches, dtype=torch.long)}
+                img_idx = 0
+                for conv in conversations:
+                    content = conv['value'].strip()
+                    if content[0] == '\n':
+                        content = content[1:]
+                    if '<image>' in content:
+                        image_tokens = f'{self.img_start_token}{self.img_content_token * num_image_tokens[img_idx]}{self.img_end_token}'
+                        content = content.replace('<image>', image_tokens)
+                        img_idx += 1
+                    if roles[conv['from']] == 'user':
+                        user_info = f"{self.conversation_start}user\n{content}{self.conversation_end}\n"
+                        tokenized_user = self.tokenizer(user_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokenized_user)
+                        labels.extend([self.ignore_index] * len(tokenized_user))
+                    elif roles[conv['from']] == 'assistant':
+                        assis_start = f"{self.conversation_start}assistant\n"
+                        tokens_assistant_start = self.tokenizer(assis_start, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokens_assistant_start)
+                        labels.extend([self.ignore_index] * len(tokens_assistant_start))
+
+                        assis_info = f"{content}{self.conversation_end}\n"
+                        tokenized_assistant = self.tokenizer(assis_info, return_attention_mask=False, add_special_tokens=False)['input_ids']
+                        tokens.extend(tokenized_assistant)
+                        labels.extend(copy.deepcopy(tokenized_assistant))
+                    else:
+                        raise NotImplementedError(f"Not Support the role {roles[conv['from']]}!")
+
+                input_ids = torch.LongTensor(tokens)
+                labels = torch.LongTensor(labels)
+                return {'input_ids': input_ids,
+                        'labels': labels,
+                        'pixel_values': pixel_values,
+                        'image_flags': torch.tensor([1] * num_patches, dtype=torch.long),
+                        'num_image': len(image_list)}
         else:
             if 'input' in meta:
                 messages = meta['input'].get('messages', [])
