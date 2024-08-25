@@ -18,7 +18,12 @@
 from abc import ABC
 from abc import abstractmethod
 
-from llm.utils.env import dist_env
+# from llm.utils.env import dist_env
+import os
+if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
+    from llm.utils.env import dist_env
+elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+    from megatron.core import mpu as dist_env
 from llm.utils.general.log_helper import default_logger as logger
 from llm.utils.general.registry_factory import BATCH_CALCULATOR_REGISTRY
 
