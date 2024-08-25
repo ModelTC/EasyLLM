@@ -56,6 +56,8 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.num_microbatches_calculator import get_num_microbatches, update_num_microbatches, get_current_global_batch_size, get_current_running_global_batch_size
 
+from llm.utils.general.microbatches import build_num_microbatches_calculator
+
 
 stimer = StragglerDetector()
 
@@ -298,7 +300,9 @@ class MegatronRunner(object):
         # self.display_train_info(cfg)
 
     def build(self):
+        self.set_param_components()
         self.build_env()
+        self.build_num_microbatches_calculator()
 
     def build_env(
         self,
@@ -323,6 +327,16 @@ class MegatronRunner(object):
         torch.distributed.all_reduce(start_time_tensor, op=torch.distributed.ReduceOp.MIN)
         self.start_time = start_time_tensor.item()
         logger.info('Initialize env done! Times (seconds): {:.3f}'.format(time.time() - self.start_time))
+
+    def set_param_components(self):
+        self.consumed_train_samples = 0
+
+    def build_num_microbatches_calculator(self):
+        if self.training:
+            self.num_microbatches_calculator = build_num_microbatches_calculator(self.config['data']['train']['batch_calculator'])      # noqa
+            self.num_microbatches_calculator.update(self.consumed_train_samples, True)
+        else:
+            self.num_microbatches_calculator = None
 
     def display_train_info(self, cfg):
         logger.info(json.dumps(cfg, indent=4))
@@ -414,24 +428,25 @@ class MegatronRunner(object):
                 timers('interval-time', log_level=0).start(barrier=True)
 
                 report_memory_flag = True
-                num_microbatches = get_num_microbatches()
+                # num_microbatches = get_num_microbatches()
                 total_flops = 0.0
                 while iteration < args.train_iters:
                     # Update number of microbatches first without consistency check to decide if a
                     # checkpoint should be saved. If the number of microbatches is different
                     # from the previous iteration, save a checkpoint. Then run consistency check
                     # to make sure training configuration is still valid.
-                    update_num_microbatches(args.consumed_train_samples, consistency_check=False, verbose=True)
-                    if get_num_microbatches() != num_microbatches and iteration != 0:
-                        assert get_num_microbatches() > num_microbatches, \
-                            "number of microbatches should be increasing due to batch size rampup ... %d -> %d." % (num_microbatches, get_num_microbatches())
-                        if args.save is not None:
-                            save_checkpoint_and_time(iteration, model, optimizer,
-                                                     opt_param_scheduler,
-                                                     num_floating_point_operations_so_far,
-                                                     checkpointing_context, train_data_iterator=train_data_iterator)
-                    num_microbatches = get_num_microbatches()
-                    update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
+                    # update_num_microbatches(args.consumed_train_samples, consistency_check=False, verbose=True)
+                    self.num_microbatches_calculator.update(self.consumed_train_samples, True)
+                    # if get_num_microbatches() != num_microbatches and iteration != 0:
+                    #     assert get_num_microbatches() > num_microbatches, \
+                    #         "number of microbatches should be increasing due to batch size rampup ... %d -> %d." % (num_microbatches, get_num_microbatches())
+                    #     if args.save is not None:
+                    #         save_checkpoint_and_time(iteration, model, optimizer,
+                    #                                  opt_param_scheduler,
+                    #                                  num_floating_point_operations_so_far,
+                    #                                  checkpointing_context, train_data_iterator=train_data_iterator)
+                    # num_microbatches = get_num_microbatches()
+                    # update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
 
                     args.curr_iteration = iteration
                     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
@@ -444,7 +459,8 @@ class MegatronRunner(object):
                     iteration += 1
                     batch_size = dist_env.get_data_parallel_world_size() * \
                                  args.micro_batch_size * \
-                                 get_num_microbatches()
+                                 self.num_microbatches_calculator.get()
+                                 # get_num_microbatches()
                     args.consumed_train_samples += batch_size
                     num_skipped_samples_in_batch = (get_current_global_batch_size() -
                                                     get_current_running_global_batch_size())
