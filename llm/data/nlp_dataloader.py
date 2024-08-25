@@ -143,9 +143,16 @@ class BatchAlignCollector(BatchCollector):
             input_ids, labels = self._pad_func(input_ids, labels)
             cu_seqlens = torch.FloatTensor([-1]).long()
             position_ids = torch.FloatTensor([-1]).long()
+        # Position ids.
+        _, seq_length = input_ids.size()
+        position_ids = torch.arange(seq_length, dtype=torch.long,
+                                    device=input_ids.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+
         data = dict(input_ids=input_ids,
                     labels=labels,
-                    attention_mask=input_ids.ne(self.pad_token_id))
+                    attention_mask=input_ids.ne(self.pad_token_id),
+                    loss_mask=input_ids.ne(self.pad_token_id).clone())
         data.update({"cu_seqlens": cu_seqlens, "position_ids": position_ids})
         return data
 

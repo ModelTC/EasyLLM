@@ -4,7 +4,12 @@ import torch
 import deepspeed
 import numpy as np
 
-from llm.utils.env import dist_env
+# from llm.utils.env import dist_env
+import os
+if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
+    from llm.utils.env import dist_env
+elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+    from megatron.core import mpu as dist_env
 from llm.utils.general import log_helper as logging
 
 
@@ -85,7 +90,7 @@ def set_random_seed(seed_, dp_random_init=False):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        if torch.cuda.device_count() > 0:
+        if torch.cuda.device_count() > 0 and os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
             dist_env.model_parallel_cuda_manual_seed(seed)
     else:
         raise ValueError('Seed ({}) should be a positive integer.'.format(seed))       # noqa

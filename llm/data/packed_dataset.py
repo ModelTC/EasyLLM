@@ -8,7 +8,11 @@ from llm.utils.general.registry_factory import DATASET_REGISTRY
 from multiprocessing.pool import ThreadPool as Pool
 from llm.data.nlp_dataset import build_dataset
 from llm.utils.general.log_helper import default_logger as logger
-from llm.utils.env import dist_env
+# from llm.utils.env import dist_env
+if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
+    from llm.utils.env import dist_env
+elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+    from megatron.core import mpu as dist_env
 
 
 IGNORE_INDEX = -100

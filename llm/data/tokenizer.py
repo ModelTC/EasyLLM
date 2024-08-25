@@ -19,6 +19,12 @@ def build_tokenizer(_cfg_tokenizer):
     padded_vocab_size = _vocab_size_with_padding(tokenizer.vocab_size,
                                                  pad_vocab_size_to)
     setattr(tokenizer, 'padded_vocab_size', padded_vocab_size)
+
+    import os
+    if os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+        from megatron.training.global_vars import get_args
+        args = get_args()
+        args.padded_vocab_size = padded_vocab_size
     return tokenizer
 
 
