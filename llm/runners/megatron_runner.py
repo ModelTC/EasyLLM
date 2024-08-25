@@ -460,25 +460,8 @@ class MegatronRunner(object):
         # Set pytorch JIT layer fusion options and warmup JIT functions.
         set_jit_fusion_options()
 
-        # _, optimizer, opt_param_scheduler = setup_model_and_optimizer(
-        #     model_provider, model_type)
         config = get_model_config(self.model[0])
 
-        # if args.virtual_pipeline_model_parallel_size is not None:
-        #     train_data_iterator = []
-        #     valid_data_iterator = []
-        #     test_data_iterator = []
-        #     for i in range(len(self.model)):
-        #         dist_env.set_virtual_pipeline_model_parallel_rank(i)
-        #         iterators = build_train_valid_test_data_iterators(
-        #             train_valid_test_datasets_provider)
-        #         train_data_iterator.append(iterators[0])
-        #         valid_data_iterator.append(iterators[1])
-        #         test_data_iterator.append(iterators[2])
-        # else:
-        #     train_data_iterator, valid_data_iterator, test_data_iterator \
-        #         = build_train_valid_test_data_iterators(
-        #             train_valid_test_datasets_provider)
         # Context used for persisting some state between checkpoint saves.
         checkpointing_context = {}
 
@@ -492,11 +475,6 @@ class MegatronRunner(object):
 
             iteration = 0
             if args.do_train and args.train_iters > 0:
-                # iteration, num_floating_point_operations_so_far = train(
-                #     forward_step,
-                #     model, optimizer, opt_param_scheduler,
-                #     train_data_iterator, valid_data_iterator,
-                #     process_non_loss_data_func, config, checkpointing_context)
                 # Turn on training mode which enables dropout.
                 for model_module in self.model:
                     model_module.train()
@@ -529,25 +507,13 @@ class MegatronRunner(object):
                 timers('interval-time', log_level=0).start(barrier=True)
 
                 report_memory_flag = True
-                # num_microbatches = get_num_microbatches()
                 total_flops = 0.0
                 while iteration < args.train_iters:
                     # Update number of microbatches first without consistency check to decide if a
                     # checkpoint should be saved. If the number of microbatches is different
                     # from the previous iteration, save a checkpoint. Then run consistency check
                     # to make sure training configuration is still valid.
-                    # update_num_microbatches(args.consumed_train_samples, consistency_check=False, verbose=True)
                     self.num_microbatches_calculator.update(self.consumed_train_samples, True)
-                    # if get_num_microbatches() != num_microbatches and iteration != 0:
-                    #     assert get_num_microbatches() > num_microbatches, \
-                    #         "number of microbatches should be increasing due to batch size rampup ... %d -> %d." % (num_microbatches, get_num_microbatches())
-                    #     if args.save is not None:
-                    #         save_checkpoint_and_time(iteration, model, optimizer,
-                    #                                  opt_param_scheduler,
-                    #                                  num_floating_point_operations_so_far,
-                    #                                  checkpointing_context, train_data_iterator=train_data_iterator)
-                    # num_microbatches = get_num_microbatches()
-                    # update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
 
                     args.curr_iteration = iteration
                     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
