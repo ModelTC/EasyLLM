@@ -47,6 +47,7 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
     from megatron.core import mpu as dist_env
 
 from llm.utils.general.parser_helper import parse_args
+from megatron.training.arguments import parse_args as parse_args_mg
 from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
 from megatron.training.training import setup_model_and_optimizer, build_train_valid_test_data_iterators, train, train_step, num_floating_point_operations, training_log, save_checkpoint_and_time, get_model, get_optimizer_param_scheduler
@@ -77,10 +78,119 @@ class MegatronRunner(object):
     def __init__(self, args, cfg=None, training=True, base_type='train'):
         self.args = args
         self.config = copy.deepcopy(cfg)
+        # mapping yaml args to megatron args
+        self.yaml2args()
         self.training = training
         self.base_type = base_type
         self.build()
         # self.display_train_info(cfg)
+
+    def build_model_cfg(self):
+        from llm.models.mg_models.llama.llama import _LLAMA_MODELS
+        from llm.models.mg_models.base_modules.utils import check_keys_mapping
+        from llm.models.mg_models.llama.default_cfg import update_model_cfg
+
+        cfg_model = self.config['model']
+        model_type = cfg_model['type']
+        if 'kwargs' not in cfg_model:
+            cfg_model['kwargs'] = {}
+        cfg_model['kwargs'].update({"fp16": self.config['runtime'].get('fp16', False),
+                                    "bf16": self.config['runtime'].get('bf16', False)})       # noqa
+        is_qkv_pack = cfg_model['kwargs'].get("transformer_layer_params", {}).get("qkv_pack", False)
+        pretrain_type = self.config['loader'].get("pretrain_type", "llama")
+        if is_qkv_pack:
+            assert "pack" in pretrain_type, "qkv_pack must load the model in pack type. currently support llama_pack and internlm2_pack!"
+        else:
+            assert "pack" not in pretrain_type, "You load the model in pack type, but do not set qkv_pack as True!"
+        if model_type != "llama_custom":
+            cfg_item = _LLAMA_MODELS[model_type]
+            check_keys_mapping(cfg_item, cfg_model)
+            cfg_model.update(cfg_item)
+        cfg_model = update_model_cfg(cfg_model['kwargs'])
+        return cfg_model
+
+    def yaml2args(self, extra_args_provider=None, ignore_unknown_args=True, args_defaults=dict()):
+        from megatron.training.arguments import parse_args, validate_args
+        from megatron.training.yaml_arguments import validate_yaml
+        from megatron.training.global_vars import set_global_variables
+        cfg_model = self.build_model_cfg()
+        args = parse_args_mg(extra_args_provider, ignore_unknown_args)
+
+        args.num_layers = cfg_model['num_layers']
+        args.hidden_size = cfg_model['hidden_size']
+        args.num_attention_heads = cfg_model['num_attention_heads']
+        args.max_position_embeddings = cfg_model["word_embedings_params"].get("max_position_embeddings")
+        args.seq_length = self.config["tokenization"]["kwargs"].get("max_seq_length", 4096)
+        if args.max_position_embeddings == None or args.seq_length > args.max_position_embeddings:
+            args.max_position_embeddings = args.seq_length
+        args.micro_batch_size = self.config['data']['train']['micro_batch_size']        
+        # if args.yaml_cfg is not None:
+        #     args = validate_yaml(args, args_defaults)
+        # else:
+        #     validate_args(args, args_defaults)
+        # set_global_variables(args, build_tokenizer=False)
+
+        logger.info("Mapping yaml args to megatron args.")
+        # args = get_args()
+        # model args
+        # cfg_model = self.build_model_cfg()
+        # args.num_layers = cfg_model['kwargs']['num_layers']
+        # args.hidden_size = cfg_model['hidden_size']
+        # args.num_attention_heads = cfg_model['num_attention_heads']
+        args.ffn_hidden_size = cfg_model['intermediate_size']
+        if cfg_model['transformer_layer_params'].get("glu_activation", "silu") == "silu":
+            args.swiglu = True
+        args.use_rotary_position_embeddings = True
+        args.hidden_dropout = cfg_model['transformer_layer_params']['hidden_dropout']
+        args.attention_dropout = cfg_model['transformer_layer_params']['attention_dropout']
+        args.add_bias_linear = False
+        args.norm_epsilon = cfg_model['layer_norm_params']["kwargs"]['eps']
+        if cfg_model['layer_norm_params']['type'] == "rms_norm":
+            args.normalization = "RMSNorm"
+        if cfg_model['num_kv_attention_heads'] != cfg_model['num_attention_heads']:
+            args.group_query_attention = True
+            args.num_query_groups = cfg_model['num_kv_attention_heads']
+        position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
+        args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
+        args.rotary_base = position_embedding_kwargs.get('base', 10000)
+        args.use_flash_attn = cfg_model.get('use_flash_attn', True)
+        args.sequence_parallel = cfg_model.get('sequence_parallel', False)
+        # training args
+        args.global_batch_size = self.config['data']['train']['global_batch_size']
+        args.train_iters = self.config['trainer'].get('train_iters', 0)
+        args.train_epoch = self.config['trainer'].get('train_iters', -1)
+        args.weight_decay = self.config['trainer']['optimizer']['kwargs'].get('weight_decay', 0.1)
+        args.adam_beta1, args.adam_beta2 = self.config['trainer']['optimizer']['kwargs'].get('betas', [0.9, 0.95])
+        args.adam_eps = self.config['trainer']['optimizer']['kwargs'].get('eps', 1.0e-8)
+        args.clip_grad = self.config['deepspeed']['config'].get('gradient_clipping', 1.0)
+        args.bf16 = self.config['runtime']['bf16']
+        args.lr = self.config['trainer']['optimizer']['kwargs']['lr']
+        args.lr_decay_style = self.config['trainer']['lr_scheduler']['kwargs']['decay_style']
+        args.min_lr = self.config['trainer']['lr_scheduler']['kwargs'].get('min_lr', 1.0e-6)
+        args.lr_warmup_iters = self.config['trainer']['lr_scheduler']['kwargs']['lr_warmup_iters']
+        args.lr_decay_iters = self.config['trainer']['lr_scheduler']['kwargs']['lr_decay_iters']
+        args.overlap_grad_reduce = True
+        args.seed = self.config['runtime']['seed']
+        args.ckpt_format = 'torch'
+        # model parallel args
+        args.tensor_model_parallel_size = self.config['runtime']['tensor_model_parallel_size']
+        args.pipeline_model_parallel_size = self.config['runtime']['pipeline_model_parallel_size']
+        args.context_parallel_size = self.config['runtime'].get('context_parallel_size', 1)
+        # data args
+        # args.data_path
+        for cfg_hook in self.config['hooks']:
+            if cfg_hook['type'] == "train_val_logger":
+                args.log_interval = cfg_hook['kwargs'].get('log_interval')
+        args.save_interval = self.config['saver']['save_interval']
+        args.save = self.config['saver']['save_path']
+        args.variable_seq_lengths = self.config['runtime'].get('dynamic', False)
+        # args.model_parallel.variable_seq_lengths = self.config['runtime'].get('dynamic', False)
+
+        if args.yaml_cfg is not None:
+            args = validate_yaml(args, args_defaults)
+        else:
+            validate_args(args, args_defaults)
+        set_global_variables(args, build_tokenizer=False)
 
     def build(self):
         self.set_param_components()
@@ -272,7 +382,7 @@ class MegatronRunner(object):
             increment = self.num_microbatches_calculator.get() * \
                         args.micro_batch_size * \
                         args.data_parallel_size
-            opt_param_scheduler.step(increment=increment)
+            self.lr_scheduler.step(increment=increment)
             skipped_iter = 0
         else:
             skipped_iter = 1
@@ -301,7 +411,7 @@ class MegatronRunner(object):
                         loss_reduced[key] += val
                 # loss_reduced[key] = numerator / denominator
                 # divide by accumulation_step
-                gradient_accumulation_step = args.global_batch_size // mpu.get_data_parallel_world_size() // args.micro_batch_size
+                gradient_accumulation_step = args.global_batch_size // dist_env.get_data_parallel_world_size() // args.micro_batch_size
                 loss_reduced[key] /= gradient_accumulation_step
             return loss_reduced, skipped_iter, grad_norm, num_zeros_in_grad
         return {}, skipped_iter, grad_norm, num_zeros_in_grad
