@@ -65,102 +65,9 @@ from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
 # from megatron.training.checkpointing import load_checkpoint, load_checkpoint_hf
 from llm.utils.model.megatron_checkpointing import load_checkpoint
 
-
-stimer = StragglerDetector()
-
 from llm.utils.model.megatron_model_provider import model_provider
-
-
-def get_batch(data_iterator):
-    """Generate a batch."""
-
-    # TODO: this is pretty hacky, find a better way
-    # if (not mpu.is_pipeline_first_stage()) and (not mpu.is_pipeline_last_stage()):
-    if (not dist_env.is_pipeline_first_stage()) and (not dist_env.is_pipeline_last_stage()):
-        return None, None, None, None, None
-
-    # get batches based on the TP rank you are on
-    batch = get_batch_on_this_tp_rank(data_iterator)
-
-    # slice batch along sequence dimension for context parallelism
-    batch = get_batch_on_this_cp_rank(batch)
-
-    return batch.values()
-
-
-def loss_func(loss_mask: torch.Tensor, labels: torch.Tensor, output_tensor: torch.Tensor):
-    """Loss function.
-
-    Args:
-        loss_mask (torch.Tensor): Used to mask out some portions of the loss
-        output_tensor (torch.Tensor): The tensor with the losses
-
-    Returns:
-        the loss scalar for this micro-batch
-        the number of non-padded tokens in this microbatch
-        a dict containing reporting metrics on the loss and number of tokens across
-            the data parallel ranks
-    """
-    args = get_args()
-    ignore_mask = (labels == IGNORE_INDEX)
-    loss_mask = loss_mask.view(-1)
-    loss_mask = loss_mask * (~ignore_mask.view(-1))
-
-    losses = output_tensor.float()
-    loss_mask = loss_mask.view(-1).float()
-    total_tokens = loss_mask.sum()
-    loss = torch.cat([torch.sum(losses.view(-1) * loss_mask).view(1), total_tokens.view(1)])
-
-    if args.context_parallel_size > 1:
-        # torch.distributed.all_reduce(loss, group=mpu.get_context_parallel_group())
-        torch.distributed.all_reduce(loss, group=dist_env.get_context_parallel_group())
-
-    # Check individual rank losses are not NaN prior to DP all-reduce.
-    if args.check_for_nan_in_loss_and_grad:
-        global_rank = torch.distributed.get_rank()
-        assert not loss[0].isnan(), (
-            f'Rank {global_rank}: found NaN in local forward loss calculation. '
-            f'Device: {torch.cuda.current_device()}, node: {os.uname()[1]}'
-        )
-
-    # Reduce loss for logging.
-    reporting_loss = loss.clone().detach()
-    reporting_loss = reporting_loss[0] / reporting_loss[1] / dist_env.get_data_parallel_world_size() # mpu.get_data_parallel_world_size()
-    # torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
-    torch.distributed.all_reduce(reporting_loss, group=dist_env.get_data_parallel_group())
-
-    local_num_tokens = loss[1].clone().detach().to(torch.int)
-    return (
-        loss[0] * args.context_parallel_size,
-        local_num_tokens,
-        # {'lm loss': (reporting_loss[0], reporting_loss[1])},
-        {'lm loss': reporting_loss}
-    )
-
-
-def forward_step(data_iterator, model: GPTModel):
-    """Forward training step.
-
-    Args:
-        data_iterator : Input data iterator
-        model (GPTModel): The GPT Model
-    """
-    args = get_args()
-    timers = get_timers()
-
-    # Get the batch.
-    timers('batch-generator', log_level=2).start()
-    global stimer
-    with stimer(bdata=True):
-        tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
-            data_iterator)
-    timers('batch-generator').stop()
-
-    with stimer:
-        output_tensor = model(tokens, position_ids, attention_mask,
-                              labels=labels)
-
-    return output_tensor, partial(loss_func, loss_mask, labels)
+from llm.utils.model.megatron_utils import forward_step
+from megatron.core.pipeline_parallel import get_forward_backward_func
 
 
 _TRAIN_START_TIME = time.time()
@@ -316,6 +223,89 @@ class MegatronRunner(object):
         dist_info = f"dp size: {dp_size}; tp_size: {tp_size}; pp_size: {pp_size}"
         logger.info(dist_info)
 
+    def forward_step(
+        self,
+        config
+    ):
+        args = get_args()
+        timers = get_timers()
+
+        # Set grad to zero.
+        for model_chunk in self.model:
+            model_chunk.zero_grad_buffer()
+        self.optimizer.zero_grad()
+
+        # Forward pass.
+        forward_backward_func = get_forward_backward_func()
+        losses_reduced = forward_backward_func(
+            forward_step_func=forward_step,
+            data_iterator=self.data_iterators['train'],
+            model=self.model,
+            num_microbatches=self.num_microbatches_calculator.get(), # get_num_microbatches(),
+            seq_length=args.seq_length,
+            micro_batch_size=args.micro_batch_size,
+            decoder_seq_length=args.decoder_seq_length,
+            forward_only=False)
+        
+        # Empty unused memory.
+        if args.empty_unused_memory_level >= 1:
+            torch.cuda.empty_cache()
+
+        # Vision gradients.
+        if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
+            unwrapped_model = unwrap_model(model[0])
+            unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
+        
+        # Update parameters.
+        timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
+        update_successful, grad_norm, num_zeros_in_grad = self.optimizer.step()
+        timers('optimizer').stop()
+
+        # Vision momentum.
+        if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
+            unwrapped_model = unwrap_model(self.model[0])
+            unwrapped_model.update_momentum(args.curr_iteration)
+
+        # Update learning rate.
+        if update_successful:
+            # increment = get_num_microbatches() * \
+            increment = self.num_microbatches_calculator.get() * \
+                        args.micro_batch_size * \
+                        args.data_parallel_size
+            opt_param_scheduler.step(increment=increment)
+            skipped_iter = 0
+        else:
+            skipped_iter = 1
+        
+        if dist_env.is_pipeline_last_stage(ignore_virtual=True):
+            # Average loss across microbatches.
+            loss_reduced = {}
+            for key in losses_reduced[0].keys():
+                if key not in loss_reduced:
+                    loss_reduced[key] = 0
+                numerator = 0
+                denominator = 0
+                for x in losses_reduced:
+                    val = x[key]
+                    # there is one dict per microbatch. in new reporting, we average
+                    # over the total number of tokens across the global batch.
+                    if isinstance(val, tuple) or isinstance(val, list):
+                        # numerator += val[0]
+                        # denominator += val[1]
+                        loss_reduced[key] += val[0] / val[1]
+                    else:
+                        # legacy behavior. we average over the number of microbatches,
+                        # and so the denominator is 1.
+                        # numerator += val
+                        # denominator += 1
+                        loss_reduced[key] += val
+                # loss_reduced[key] = numerator / denominator
+                # divide by accumulation_step
+                gradient_accumulation_step = args.global_batch_size // mpu.get_data_parallel_world_size() // args.micro_batch_size
+                loss_reduced[key] /= gradient_accumulation_step
+            return loss_reduced, skipped_iter, grad_norm, num_zeros_in_grad
+        return {}, skipped_iter, grad_norm, num_zeros_in_grad
+
     def train(
         self,
         model_type=ModelType.encoder_or_decoder,
@@ -386,12 +376,14 @@ class MegatronRunner(object):
 
                     args.curr_iteration = iteration
                     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
-                        train_step(forward_step,
-                                   self.data_iterators['train'],
-                                   self.model,
-                                   self.optimizer,
-                                   self.lr_scheduler,
-                                   config)
+                        self.forward_step(config)
+                        # self.forward_step(forward_step,
+                        #                   self.data_iterators['train'],
+                        #                   self.model,
+                        #                   self.optimizer,
+                        #                   self.lr_scheduler,
+                        #                   config)
+                        
                     iteration += 1
                     batch_size = dist_env.get_data_parallel_world_size() * \
                                  args.micro_batch_size * \
