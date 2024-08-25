@@ -1,6 +1,7 @@
 # Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 """Pretrain GPT."""
 
+import dataclasses
 import os
 import copy
 import json
@@ -48,7 +49,7 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
 from llm.utils.general.parser_helper import parse_args
 from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
-from megatron.training.training import setup_model_and_optimizer, build_train_valid_test_data_iterators, train, train_step, num_floating_point_operations, training_log, save_checkpoint_and_time, get_model
+from megatron.training.training import setup_model_and_optimizer, build_train_valid_test_data_iterators, train, train_step, num_floating_point_operations, training_log, save_checkpoint_and_time, get_model, get_optimizer_param_scheduler
 from megatron.training.initialize import initialize_megatron, set_jit_fusion_options
 from megatron.core.utils import get_model_config
 
@@ -59,6 +60,9 @@ from megatron.core.num_microbatches_calculator import get_num_microbatches, upda
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.utils.general.utils import get_train_iters
+from megatron.training.utils import unwrap_model
+from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
+from megatron.training.checkpointing import load_checkpoint, load_checkpoint_hf
 
 
 stimer = StragglerDetector()
@@ -308,6 +312,8 @@ class MegatronRunner(object):
         self.build_tokenizer()
         self.build_model()
         self.build_data_engine()
+        self.build_trainer()
+        self.load_checkpoint()
 
     def build_env(
         self,
@@ -332,6 +338,37 @@ class MegatronRunner(object):
         torch.distributed.all_reduce(start_time_tensor, op=torch.distributed.ReduceOp.MIN)
         self.start_time = start_time_tensor.item()
         logger.info('Initialize env done! Times (seconds): {:.3f}'.format(time.time() - self.start_time))
+
+    def load_checkpoint(self):
+        from llm.utils.general.yaml_loader import load_yaml
+        args = get_args()
+        timers = get_timers()
+        unwrapped_model = unwrap_model(self.model)
+
+        config = load_yaml(args.config)
+        cfg_loader = config["loader"]
+        # if args.load is not None or args.pretrained_checkpoint is not None:
+        if cfg_loader.get("debug", False):
+            args.iteration = 0
+            args.num_floating_point_operations_so_far = 0
+        else:
+            timers('load-checkpoint', log_level=0).start(barrier=True)
+            if cfg_loader.get("load_mode") == "huggingface":
+                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint_hf(
+                    self.model, self.optimizer, self.lr_scheduler, cfg_loader=cfg_loader)
+            else:
+                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
+                    self.model, self.optimizer, self.lr_scheduler)
+            timers('load-checkpoint').stop(barrier=True)
+            timers.log(['load-checkpoint'])
+
+        # get model without FP16 and/or DDP wrappers
+        if args.iteration == 0 and len(unwrapped_model) == 1 \
+            and hasattr(unwrapped_model[0], 'init_state_dict_from_bert'):
+            print_rank_0("Initializing ICT from pretrained BERT model")
+            unwrapped_model[0].init_state_dict_from_bert()
+            if args.fp16:
+                self.optimizer.reload_model_params()
 
     def build_model(self, model_type=ModelType.encoder_or_decoder):
         self.model = get_model(model_provider, model_type)
@@ -372,6 +409,26 @@ class MegatronRunner(object):
         args.do_valid = False
         args.do_test = False
 
+    def build_trainer(self, no_wd_decay_cond=None, scale_lr_cond=None, lr_mult=1.0):
+        args = get_args()
+        timers = get_timers()
+        unwrapped_model = unwrap_model(self.model)
+        if self.training:
+            kwargs = {}
+            for f in dataclasses.fields(OptimizerConfig):
+                if hasattr(args, f.name):
+                    kwargs[f.name] = getattr(args, f.name)
+            config = OptimizerConfig(**kwargs)
+            config.timers = timers
+            optimizer = get_megatron_optimizer(config, self.model, no_wd_decay_cond,
+                                               scale_lr_cond, lr_mult)
+            lr_scheduler = get_optimizer_param_scheduler(optimizer)
+        else:
+            optimizer = None
+            lr_scheduler = None
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+
     def set_param_components(self):
         self.consumed_train_samples = 0
 
@@ -403,8 +460,8 @@ class MegatronRunner(object):
         # Set pytorch JIT layer fusion options and warmup JIT functions.
         set_jit_fusion_options()
 
-        _, optimizer, opt_param_scheduler = setup_model_and_optimizer(
-            model_provider, model_type)
+        # _, optimizer, opt_param_scheduler = setup_model_and_optimizer(
+        #     model_provider, model_type)
         config = get_model_config(self.model[0])
 
         # if args.virtual_pipeline_model_parallel_size is not None:
@@ -450,7 +507,7 @@ class MegatronRunner(object):
                 iteration = args.iteration
                 num_floating_point_operations_so_far = args.num_floating_point_operations_so_far
                 # Setup some training config params
-                config.grad_scale_func = optimizer.scale_loss
+                config.grad_scale_func = self.optimizer.scale_loss
                 config.timers = timers
                 if isinstance(self.model[0], DDP) and args.overlap_grad_reduce:
                     assert config.no_sync_func is None, \
@@ -464,7 +521,7 @@ class MegatronRunner(object):
                     if len(self.model) == 1:
                         config.grad_sync_func = config.grad_sync_func[0]
                 if args.overlap_param_gather and args.delay_param_gather:
-                    config.param_sync_func = [lambda x: optimizer.finish_param_sync(model_index, x)
+                    config.param_sync_func = [lambda x: self.optimizer.finish_param_sync(model_index, x)
                                               for model_index in range(len(self.model))]
                     if len(self.model) == 1:
                         config.param_sync_func = config.param_sync_func[0]
@@ -497,8 +554,8 @@ class MegatronRunner(object):
                         train_step(forward_step,
                                    self.data_iterators['train'],
                                    self.model,
-                                   optimizer,
-                                   opt_param_scheduler,
+                                   self.optimizer,
+                                   self.lr_scheduler,
                                    config)
                     iteration += 1
                     batch_size = dist_env.get_data_parallel_world_size() * \
@@ -518,14 +575,14 @@ class MegatronRunner(object):
                     total_flops += num_fp_ops
 
                     # Logging.
-                    loss_scale = optimizer.get_loss_scale().item()
+                    loss_scale = self.optimizer.get_loss_scale().item()
                     params_norm = None
                     if args.log_params_norm:
                         params_norm = calc_params_l2_norm(self.model)
 
                     learning_rate = None
                     decoupled_learning_rate = None
-                    for param_group in optimizer.param_groups:
+                    for param_group in self.optimizer.param_groups:
                         if param_group['is_decoupled_lr']:
                             decoupled_learning_rate = param_group['lr']
                         else:
@@ -542,8 +599,8 @@ class MegatronRunner(object):
                     if args.exit_signal_handler:
                         signal_handler = get_signal_handler()
                         if any(signal_handler.signals_received()):
-                            save_checkpoint_and_time(iteration, self.model, optimizer,
-                                                     opt_param_scheduler,
+                            save_checkpoint_and_time(iteration, self.model, self.optimizer,
+                                                     self.lr_scheduler,
                                                      num_floating_point_operations_so_far,
                                                      checkpointing_context, train_data_iterator=self.data_iterators['train'])
                             print_datetime('exiting program after receiving SIGTERM.')
@@ -552,8 +609,8 @@ class MegatronRunner(object):
 
                     if args.save and args.save_interval and \
                        iteration % args.save_interval == 0:
-                        save_checkpoint_and_time(iteration, self.model, optimizer,
-                                                 opt_param_scheduler,
+                        save_checkpoint_and_time(iteration, self.model, self.optimizer,
+                                                 self.lr_scheduler,
                                                  num_floating_point_operations_so_far,
                                                  checkpointing_context, train_data_iterator=self.data_iterators['train'])
                         saved_checkpoint = True
@@ -561,8 +618,8 @@ class MegatronRunner(object):
                     elif args.save and args.non_persistent_save_interval and \
                        iteration % args.non_persistent_save_interval == 0:
                         timers('interval-time').stop()
-                        save_checkpoint_and_time(iteration, self.model, optimizer,
-                                                 opt_param_scheduler,
+                        save_checkpoint_and_time(iteration, self.model, self.optimizer,
+                                                 self.lr_scheduler,
                                                  num_floating_point_operations_so_far,
                                                  non_persistent_ckpt=True, train_data_iterator=self.data_iterators['train'])
                         saved_checkpoint = True
@@ -570,7 +627,7 @@ class MegatronRunner(object):
 
             # print_datetime('after training is done')
             if args.save and iteration != 0 and iteration % args.save_interval != 0:
-                save_checkpoint(iteration, self.model, optimizer, opt_param_scheduler,
+                save_checkpoint(iteration, self.model, self.optimizer, self.lr_scheduler,
                                 num_floating_point_operations_so_far, checkpointing_context,
                                 train_data_iterator=self.data_iterators['train'])
         else:
