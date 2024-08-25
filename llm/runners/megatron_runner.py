@@ -57,6 +57,8 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.num_microbatches_calculator import get_num_microbatches, update_num_microbatches, get_current_global_batch_size, get_current_running_global_batch_size
 
 from llm.utils.general.microbatches import build_num_microbatches_calculator
+from llm.data import build_tokenizer, build_data_iterator
+from llm.utils.general.utils import get_train_iters
 
 
 stimer = StragglerDetector()
@@ -303,7 +305,9 @@ class MegatronRunner(object):
         self.set_param_components()
         self.build_env()
         self.build_num_microbatches_calculator()
+        self.build_tokenizer()
         self.build_model()
+        self.build_data_engine()
 
     def build_env(
         self,
@@ -331,6 +335,42 @@ class MegatronRunner(object):
 
     def build_model(self, model_type=ModelType.encoder_or_decoder):
         self.model = get_model(model_provider, model_type)
+
+    def build_tokenizer(self):
+        self.tokenizer = build_tokenizer(self.config['tokenizer'])
+
+    def set_train_iters(self, train_iters):
+        self.total_train_iters = get_train_iters(self.num_microbatches_calculator,
+                                                 train_iters,
+                                                 self.config['trainer'].get('train_samples', None))
+
+    def build_data_engine(self):
+        cfg_data = self.config['data']
+        data_types = cfg_data.get('data_types', ['train', 'test'])
+        self.data_iterators = {}
+        self.batch_pipe_func = {}
+        for data_type in data_types:
+            assert data_type in ['train', 'valid', 'test', 'infer'], 'data type only support train, valid, test, and infer'       # noqa
+            # self.batch_pipe_func[data_type] = build_batch_pipe_fn(cfg_data[data_type]['batch_pipe'], self.tokenizer)
+            if data_type == 'infer':
+                infer_type = cfg_data[data_type].get('infer_type', 'interactive')
+                if infer_type == 'interactive':
+                    continue        # skip build data_iterators for inference mode
+            data_iterator, dataset_size = build_data_iterator(self.tokenizer, cfg_data, self.consumed_train_samples, data_type)  # noqa
+            self.data_iterators[data_type] = data_iterator
+        if self.training:
+            epoch = self.config['trainer'].get('epoch', -1)
+            if epoch > 0:
+                global_batch_size = self.num_microbatches_calculator.global_batch_size
+                train_iters = int((dataset_size.item() // global_batch_size + 1) * epoch)
+            else:
+                train_iters = self.config['trainer'].get('train_iters', 100)
+            self.set_train_iters(train_iters)
+
+        args = get_args()
+        args.do_train = True
+        args.do_valid = False
+        args.do_test = False
 
     def set_param_components(self):
         self.consumed_train_samples = 0
@@ -367,21 +407,21 @@ class MegatronRunner(object):
             model_provider, model_type)
         config = get_model_config(self.model[0])
 
-        if args.virtual_pipeline_model_parallel_size is not None:
-            train_data_iterator = []
-            valid_data_iterator = []
-            test_data_iterator = []
-            for i in range(len(self.model)):
-                dist_env.set_virtual_pipeline_model_parallel_rank(i)
-                iterators = build_train_valid_test_data_iterators(
-                    train_valid_test_datasets_provider)
-                train_data_iterator.append(iterators[0])
-                valid_data_iterator.append(iterators[1])
-                test_data_iterator.append(iterators[2])
-        else:
-            train_data_iterator, valid_data_iterator, test_data_iterator \
-                = build_train_valid_test_data_iterators(
-                    train_valid_test_datasets_provider)
+        # if args.virtual_pipeline_model_parallel_size is not None:
+        #     train_data_iterator = []
+        #     valid_data_iterator = []
+        #     test_data_iterator = []
+        #     for i in range(len(self.model)):
+        #         dist_env.set_virtual_pipeline_model_parallel_rank(i)
+        #         iterators = build_train_valid_test_data_iterators(
+        #             train_valid_test_datasets_provider)
+        #         train_data_iterator.append(iterators[0])
+        #         valid_data_iterator.append(iterators[1])
+        #         test_data_iterator.append(iterators[2])
+        # else:
+        #     train_data_iterator, valid_data_iterator, test_data_iterator \
+        #         = build_train_valid_test_data_iterators(
+        #             train_valid_test_datasets_provider)
         # Context used for persisting some state between checkpoint saves.
         checkpointing_context = {}
 
@@ -455,7 +495,7 @@ class MegatronRunner(object):
                     args.curr_iteration = iteration
                     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
                         train_step(forward_step,
-                                   train_data_iterator,
+                                   self.data_iterators['train'],
                                    self.model,
                                    optimizer,
                                    opt_param_scheduler,
@@ -505,7 +545,7 @@ class MegatronRunner(object):
                             save_checkpoint_and_time(iteration, self.model, optimizer,
                                                      opt_param_scheduler,
                                                      num_floating_point_operations_so_far,
-                                                     checkpointing_context, train_data_iterator=train_data_iterator)
+                                                     checkpointing_context, train_data_iterator=self.data_iterators['train'])
                             print_datetime('exiting program after receiving SIGTERM.')
                             exit = True
                             break
@@ -515,7 +555,7 @@ class MegatronRunner(object):
                         save_checkpoint_and_time(iteration, self.model, optimizer,
                                                  opt_param_scheduler,
                                                  num_floating_point_operations_so_far,
-                                                 checkpointing_context, train_data_iterator=train_data_iterator)
+                                                 checkpointing_context, train_data_iterator=self.data_iterators['train'])
                         saved_checkpoint = True
 
                     elif args.save and args.non_persistent_save_interval and \
@@ -524,7 +564,7 @@ class MegatronRunner(object):
                         save_checkpoint_and_time(iteration, self.model, optimizer,
                                                  opt_param_scheduler,
                                                  num_floating_point_operations_so_far,
-                                                 non_persistent_ckpt=True, train_data_iterator=train_data_iterator)
+                                                 non_persistent_ckpt=True, train_data_iterator=self.data_iterators['train'])
                         saved_checkpoint = True
                         timers('interval-time', log_level=0).start(barrier=True)
 
@@ -532,7 +572,7 @@ class MegatronRunner(object):
             if args.save and iteration != 0 and iteration % args.save_interval != 0:
                 save_checkpoint(iteration, self.model, optimizer, opt_param_scheduler,
                                 num_floating_point_operations_so_far, checkpointing_context,
-                                train_data_iterator=train_data_iterator)
+                                train_data_iterator=self.data_iterators['train'])
         else:
             print_rank_0('skipping training (--skip-train is on) ...')
 
