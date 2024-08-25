@@ -35,8 +35,8 @@ from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_local_spec,
     get_gpt_layer_with_transformer_engine_spec,
-    get_llama_layer_with_transformer_engine_spec,
-    get_llama_layer_local_spec
+    # get_llama_layer_with_transformer_engine_spec,
+    # get_llama_layer_local_spec
 )
 from llm.data.nlp_dataset import IGNORE_INDEX
 
@@ -62,7 +62,8 @@ from llm.data import build_tokenizer, build_data_iterator
 from llm.utils.general.utils import get_train_iters
 from megatron.training.utils import unwrap_model
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
-from megatron.training.checkpointing import load_checkpoint, load_checkpoint_hf
+# from megatron.training.checkpointing import load_checkpoint, load_checkpoint_hf
+from llm.utils.model.megatron_checkpointing import load_checkpoint
 
 
 stimer = StragglerDetector()
@@ -197,7 +198,8 @@ class MegatronRunner(object):
             extra_args_provider=extra_args_provider,
             args_defaults=args_defaults,
             get_embedding_ranks=get_embedding_ranks,
-            get_position_embedding_ranks=get_position_embedding_ranks
+            get_position_embedding_ranks=get_position_embedding_ranks,
+            ignore_unknown_args=True
         )
         # Set random seed.
         set_random_seed(cfg_runtime.get('seed', 42), cfg_runtime.get('dp_random_init', False))
@@ -214,8 +216,7 @@ class MegatronRunner(object):
         timers = get_timers()
         unwrapped_model = unwrap_model(self.model)
 
-        config = load_yaml(args.config)
-        cfg_loader = config["loader"]
+        cfg_loader = self.config["loader"]
         # if args.load is not None or args.pretrained_checkpoint is not None:
         if cfg_loader.get("debug", False):
             args.iteration = 0
@@ -223,11 +224,10 @@ class MegatronRunner(object):
         else:
             timers('load-checkpoint', log_level=0).start(barrier=True)
             if cfg_loader.get("load_mode") == "huggingface":
-                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint_hf(
+                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
                     self.model, self.optimizer, self.lr_scheduler, cfg_loader=cfg_loader)
             else:
-                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
-                    self.model, self.optimizer, self.lr_scheduler)
+                raise NotImplementedError('only support huggingface load mode.')
             timers('load-checkpoint').stop(barrier=True)
             timers.log(['load-checkpoint'])
 
@@ -325,7 +325,7 @@ class MegatronRunner(object):
         timers = get_timers()
 
         # Temporary for transition to core datasets
-        train_valid_test_datasets_provider.is_distributed = True
+        # train_valid_test_datasets_provider.is_distributed = True
         # Set pytorch JIT layer fusion options and warmup JIT functions.
         set_jit_fusion_options()
 
