@@ -67,64 +67,7 @@ from megatron.training.checkpointing import load_checkpoint, load_checkpoint_hf
 
 stimer = StragglerDetector()
 
-def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
-    """Builds the model.
-
-    If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
-
-    Args:
-        pre_process (bool, optional): Set to true if you need to compute embedings. Defaults to True.
-        post_process (bool, optional): Set to true if you need to want to compute output logits/loss. Defaults to True.
-
-
-    Returns:
-        Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
-    """
-    args = get_args()
-    use_te = args.transformer_impl == "transformer_engine"
-
-    print_rank_0('building GPT model ...')
-    # Experimental loading arguments from yaml
-    if args.yaml_cfg is not None:
-        config = core_transformer_config_from_yaml(args, "language_model")
-    else:
-        config = core_transformer_config_from_args(args)
-
-    if args.use_legacy_models:
-        model = megatron.legacy.model.GPTModel(
-            config,
-            num_tokentypes=0,
-            parallel_output=True,
-            pre_process=pre_process,
-            post_process=post_process,
-        )
-    else: # using core models
-        if args.spec is not None:
-            transformer_layer_spec = import_module(args.spec)
-        else:
-            if use_te:
-                # transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
-                transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
-            else:
-                # transformer_layer_spec = get_gpt_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
-                transformer_layer_spec = get_llama_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
-
-        model = GPTModel(
-            config=config,
-            transformer_layer_spec=transformer_layer_spec,
-            vocab_size=args.padded_vocab_size,
-            max_sequence_length=args.max_position_embeddings,
-            pre_process=pre_process,
-            post_process=post_process,
-            fp16_lm_cross_entropy=args.fp16_lm_cross_entropy,
-            parallel_output=True,
-            share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
-            position_embedding_type=args.position_embedding_type,
-            rotary_percent=args.rotary_percent,
-            rotary_base=args.rotary_base
-        )
-
-    return model
+from llm.utils.model.megatron_model_provider import model_provider
 
 
 def get_batch(data_iterator):
@@ -217,80 +160,6 @@ def forward_step(data_iterator, model: GPTModel):
                               labels=labels)
 
     return output_tensor, partial(loss_func, loss_mask, labels)
-
-
-def is_dataset_built_on_rank():
-    # return (
-    #     mpu.is_pipeline_first_stage() or mpu.is_pipeline_last_stage()
-    # ) and mpu.get_tensor_model_parallel_rank() == 0
-    return (
-        dist_env.is_pipeline_first_stage() or dist_env.is_pipeline_last_stage()
-    ) and dist_env.get_tensor_model_parallel_rank() == 0
-
-
-def core_gpt_dataset_config_from_args(args):
-    tokenizer = get_tokenizer()
-
-    return GPTDatasetConfig(
-        random_seed=args.seed,
-        sequence_length=args.seq_length,
-        blend=get_blend_from_list(args.data_path),
-        blend_per_split=[
-            get_blend_from_list(args.train_data_path),
-            get_blend_from_list(args.valid_data_path),
-            get_blend_from_list(args.test_data_path)
-        ],
-        split=args.split,
-        num_dataset_builder_threads=args.num_dataset_builder_threads,
-        path_to_cache=args.data_cache_path,
-        mmap_bin_files=args.mmap_bin_files,
-        tokenizer=tokenizer,
-        reset_position_ids=args.reset_position_ids,
-        reset_attention_mask=args.reset_attention_mask,
-        eod_mask_loss=args.eod_mask_loss,
-        create_attention_mask=args.create_attention_mask_in_dataloader,
-        s3_cache_path = args.s3_cache_path
-    )
-
-
-def dataset_builder():
-    # if torch.distributed.is_initialized() and not is_dataset_built_on_rank():
-        # for i in range(len(Split)):
-        #     if split[i] is not None and synchronize_ranks:
-        #         torch.distributed.barrier()
-    #     return [None] * 3 # len(Split)
-
-    from llm.data import build_tokenizer
-    from llm.data.nlp_dataset import build_dataset
-    from llm.utils.general.yaml_loader import load_yaml
-
-    args = get_args()
-    config = load_yaml(args.config)
-    tokenizer = build_tokenizer(config['tokenizer'])
-    dataset = build_dataset(config['data']["train"]['dataset'], tokenizer)
-    if args.train_epoch > 0:
-        import math
-        args.train_iters = args.train_epoch * math.ceil(len(dataset) / args.global_batch_size)
-    if torch.distributed.is_initialized() and not is_dataset_built_on_rank():
-        return [None] * 3
-    return dataset, None, None
-
-
-def train_valid_test_datasets_provider(train_val_test_num_samples):
-    """Build the train test and validation datasets.
-
-    Args:
-        train_val_test_num_samples : A list containing the number of samples in train test and validation.
-    """
-    args = get_args()
-
-    print_rank_0("> building train, validation, and test datasets for GPT ...")
-
-    train_ds, valid_ds, test_ds = dataset_builder()
-
-    print_rank_0("> finished creating GPT datasets ...")
-
-    return train_ds, valid_ds, test_ds
 
 
 _TRAIN_START_TIME = time.time()
@@ -623,7 +492,7 @@ def main():
         if 'kwargs' in cfg['model']:
             if 'sequence_parallel' in cfg['model']['kwargs']:
                 cfg['model']['kwargs']['sequence_parallel'] = False
-        runner = BaseRunner(args, cfg, training=False, base_type='infer')
+        runner = MegatronRunner(args, cfg, training=False, base_type='infer')
         runner.generate()
     else:
         # runner = BaseRunner(args, cfg, training=True, base_type='train')
@@ -633,17 +502,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# if __name__ == "__main__":
-# 
-#     # Temporary for transition to core datasets
-#     train_valid_test_datasets_provider.is_distributed = True
-# 
-#     pretrain(
-#         train_valid_test_datasets_provider,
-#         model_provider,
-#         ModelType.encoder_or_decoder,
-#         forward_step,
-#         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
-#     )
