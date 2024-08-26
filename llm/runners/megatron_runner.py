@@ -20,6 +20,7 @@ from megatron.training.initialize import initialize_megatron, set_jit_fusion_opt
 from megatron.training.utils import unwrap_model
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
+from megatron.training.checkpointing import save_checkpoint
 from megatron.training.training import (
     get_model,
     get_optimizer_param_scheduler,
@@ -337,7 +338,7 @@ class MegatronRunner(object):
                 config.param_sync_func = config.param_sync_func[0]
         config.finalize_model_grads_func = finalize_model_grads
         # TODO: resume training
-        for iteration in range(self.start_iteration, args.train_iters):
+        for iteration in range(self.start_iteration, args.train_iters + 1):
             self.num_microbatches_calculator.update(self.consumed_train_samples, True)
             args.curr_iteration = iteration
             loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = self.forward_step()
