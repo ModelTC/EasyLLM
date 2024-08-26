@@ -69,6 +69,7 @@ from llm.utils.model.megatron_checkpointing import load_checkpoint
 from llm.utils.model.megatron_model_provider import model_provider
 from llm.utils.model.megatron_utils import forward_step
 from megatron.core.pipeline_parallel import get_forward_backward_func
+from llm.utils.general.hook_helper import build_hooks
 
 
 _TRAIN_START_TIME = time.time()
@@ -158,7 +159,7 @@ class MegatronRunner(object):
         # training args
         args.global_batch_size = self.config['data']['train']['global_batch_size']
         args.train_iters = self.config['trainer'].get('train_iters', 0)
-        args.train_epoch = self.config['trainer'].get('train_iters', -1)
+        args.train_epoch = self.config['trainer'].get('epoch', -1)
         args.weight_decay = self.config['trainer']['optimizer']['kwargs'].get('weight_decay', 0.1)
         args.adam_beta1, args.adam_beta2 = self.config['trainer']['optimizer']['kwargs'].get('betas', [0.9, 0.95])
         args.adam_eps = self.config['trainer']['optimizer']['kwargs'].get('eps', 1.0e-8)
@@ -183,6 +184,8 @@ class MegatronRunner(object):
                 args.log_interval = cfg_hook['kwargs'].get('log_interval')
         args.save_interval = self.config['saver']['save_interval']
         args.save = self.config['saver']['save_path']
+        args.no_save_optim = not self.config['saver'].get('save_optim', False)
+        args.no_save_rng = not self.config['saver'].get('save_rng_state', False)
         args.variable_seq_lengths = self.config['runtime'].get('dynamic', False)
         # args.model_parallel.variable_seq_lengths = self.config['runtime'].get('dynamic', False)
 
@@ -197,10 +200,27 @@ class MegatronRunner(object):
         self.build_env()
         self.build_num_microbatches_calculator()
         self.build_tokenizer()
+        # self.build_hooks()
         self.build_model()
         self.build_data_engine()
         self.build_trainer()
         self.load_checkpoint()
+        # tensorboard_writer
+        cfg_hooks = self.config['hooks']
+        log_dir = "tf_logs/base"
+        for cfg_hook in cfg_hooks:
+            if cfg_hook['type'] == 'train_val_logger' and cfg_hook['kwargs'].get('tensorboard', True):
+                log_dir = cfg_hook['kwargs'].get("log_dir", "tf_logs/base")
+        self.tensorboard_writer = None
+        # if torch.distributed.get_rank() == 0:
+        if torch.distributed.get_rank() == (torch.distributed.get_world_size() - 1):
+            from tensorboardX import SummaryWriter
+            self.tensorboard_writer = SummaryWriter(log_dir=log_dir)
+
+    def build_hooks(self):
+        cfg_hooks = self.config.get('hooks', [])
+        self._hooks = build_hooks(self, cfg_hooks, is_train=self.training, add_log_if_not_exists=True)
+        logger.info('build hooks done')
 
     def build_env(
         self,
@@ -294,6 +314,7 @@ class MegatronRunner(object):
         args.do_train = True
         args.do_valid = False
         args.do_test = False
+        args.train_iters = train_iters
 
     def build_trainer(self, no_wd_decay_cond=None, scale_lr_cond=None, lr_mult=1.0):
         args = get_args()
@@ -485,6 +506,7 @@ class MegatronRunner(object):
                     self.num_microbatches_calculator.update(self.consumed_train_samples, True)
 
                     args.curr_iteration = iteration
+                    
                     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
                         self.forward_step(config)
                         # self.forward_step(forward_step,
@@ -493,6 +515,14 @@ class MegatronRunner(object):
                         #                   self.optimizer,
                         #                   self.lr_scheduler,
                         #                   config)
+                    # if self.tensorboard_writer is not None:
+                    #     self.tensorboard_writer.add_scalar("train/lr", learning_rate, cur_iter)
+                    for key in loss_dict:
+                        if key == "lm loss":
+                            avg = loss_dict[key].item() # self.total_loss_dict[key].item() / float(max(1, self.total_loss_dict[self.advanced_iters_key]))       # noqa
+                            if self.tensorboard_writer is not None:
+                                self.tensorboard_writer.add_scalar(f'train/lm_loss', avg, iteration)
+                    # self.total_loss_dict[key] = torch.cuda.FloatTensor([0.0])
                         
                     iteration += 1
                     batch_size = dist_env.get_data_parallel_world_size() * \

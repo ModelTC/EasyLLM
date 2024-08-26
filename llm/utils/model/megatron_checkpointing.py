@@ -39,6 +39,9 @@ try:
 except Exception:
     has_nvidia_modelopt = False
 
+from llm.utils.general.log_helper import default_logger as logger
+from megatron.training.checkpointing import set_checkpoint_version, get_checkpoint_version
+
 
 def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
                           exit_on_missing_checkpoint=False, checkpoint_step = None):
