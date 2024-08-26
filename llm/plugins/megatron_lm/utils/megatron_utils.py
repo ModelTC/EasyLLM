@@ -202,10 +202,12 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     args.save = config['saver']['save_path']
     args.no_save_optim = not config['saver'].get('save_optim', False)
     args.no_save_rng = not config['saver'].get('save_rng_state', False)
-    args.variable_seq_lengths = config['runtime'].get('dynamic', False)
+    # args.variable_seq_lengths = config['runtime'].get('dynamic', False)
 
     if args.yaml_cfg is not None:
         args = validate_yaml(args, args_defaults)
     else:
         validate_args(args, args_defaults)
     set_global_variables(args, build_tokenizer=False)
+
+    args.variable_seq_lengths = config['runtime'].get('dynamic', False)
