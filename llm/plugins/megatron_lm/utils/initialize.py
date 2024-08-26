@@ -96,7 +96,7 @@ def initialize_megatron(
         _compile_dependencies()
 
         if args.tp_comm_overlap:
-           _initialize_tp_communicators()
+            _initialize_tp_communicators()
 
         # No continuation function
         return None

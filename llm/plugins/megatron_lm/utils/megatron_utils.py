@@ -75,7 +75,7 @@ def loss_func(loss_mask: torch.Tensor, labels: torch.Tensor, output_tensor: torc
 
     # Reduce loss for logging.
     reporting_loss = loss.clone().detach()
-    reporting_loss = reporting_loss[0] / reporting_loss[1] / dist_env.get_data_parallel_world_size() # mpu.get_data_parallel_world_size()
+    reporting_loss = reporting_loss[0] / reporting_loss[1] / dist_env.get_data_parallel_world_size()  # mpu.get_data_parallel_world_size()
     # torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
     torch.distributed.all_reduce(reporting_loss, group=dist_env.get_data_parallel_group())
 
@@ -95,7 +95,6 @@ def forward_step(data_iterator, model: GPTModel):
         data_iterator : Input data iterator
         model (GPTModel): The GPT Model
     """
-    args = get_args()
     timers = get_timers()
 
     # Get the batch.
@@ -111,6 +110,7 @@ def forward_step(data_iterator, model: GPTModel):
                               labels=labels)
 
     return output_tensor, partial(loss_func, loss_mask, labels)
+
 
 def build_model_cfg(config):
     from llm.models.mg_models.llama.llama import _LLAMA_MODELS
@@ -136,9 +136,10 @@ def build_model_cfg(config):
     cfg_model = update_model_cfg(cfg_model['kwargs'])
     return cfg_model
 
+
 def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_defaults=dict()):
     from megatron.training.arguments import parse_args as parse_args_mg
-    from megatron.training.arguments import parse_args, validate_args
+    from megatron.training.arguments import validate_args
     from megatron.training.yaml_arguments import validate_yaml
     from megatron.training.global_vars import set_global_variables
     cfg_model = build_model_cfg(config)
@@ -149,7 +150,7 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     args.num_attention_heads = cfg_model['num_attention_heads']
     args.max_position_embeddings = cfg_model["word_embedings_params"].get("max_position_embeddings")
     args.seq_length = config["tokenization"]["kwargs"].get("max_seq_length", 4096)
-    if args.max_position_embeddings == None or args.seq_length > args.max_position_embeddings:
+    if args.max_position_embeddings is None or args.seq_length > args.max_position_embeddings:
         args.max_position_embeddings = args.seq_length
     args.micro_batch_size = config['data']['train']['micro_batch_size']
 

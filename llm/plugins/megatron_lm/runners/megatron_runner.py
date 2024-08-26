@@ -7,8 +7,6 @@ import copy
 import json
 import time
 import torch
-from functools import partial
-from typing import Union
 
 from megatron.training import get_args
 from megatron.training import get_timers
@@ -39,7 +37,6 @@ from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
-from llm.utils.general.utils import get_train_iters
 from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
 from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider
 from llm.plugins.megatron_lm.utils.megatron_utils import forward_step, yaml2args
@@ -140,7 +137,7 @@ class MegatronRunner(object):
 
         # get model without FP16 and/or DDP wrappers
         if args.iteration == 0 and len(unwrapped_model) == 1 \
-            and hasattr(unwrapped_model[0], 'init_state_dict_from_bert'):
+                and hasattr(unwrapped_model[0], 'init_state_dict_from_bert'):
             logger.info("Initializing ICT from pretrained BERT model")
             unwrapped_model[0].init_state_dict_from_bert()
             if args.fp16:
@@ -182,7 +179,6 @@ class MegatronRunner(object):
     def build_trainer(self, no_wd_decay_cond=None, scale_lr_cond=None, lr_mult=1.0):
         args = get_args()
         timers = get_timers()
-        unwrapped_model = unwrap_model(self.model)
         if self.training:
             kwargs = {}
             for f in dataclasses.fields(OptimizerConfig):
@@ -201,7 +197,7 @@ class MegatronRunner(object):
 
     def set_param_components(self):
         self.consumed_train_samples = 0
-        ## TODO: LoRA
+        # TODO: LoRA
 
     def build_num_microbatches_calculator(self):
         if self.training:
@@ -233,21 +229,21 @@ class MegatronRunner(object):
             forward_step_func=forward_step,
             data_iterator=self.data_iterators['train'],
             model=self.model,
-            num_microbatches=self.num_microbatches_calculator.get(), # get_num_microbatches(),
+            num_microbatches=self.num_microbatches_calculator.get(),  # get_num_microbatches(),
             seq_length=args.seq_length,
             micro_batch_size=args.micro_batch_size,
             decoder_seq_length=args.decoder_seq_length,
             forward_only=False)
-        
+
         # Empty unused memory.
         if args.empty_unused_memory_level >= 1:
             torch.cuda.empty_cache()
 
         # Vision gradients.
         if getattr(args, 'vision_pretraining', False) and args.vision_pretraining_type == "dino":
-            unwrapped_model = unwrap_model(model[0])
+            unwrapped_model = unwrap_model(self.model[0])
             unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
-        
+
         # Update parameters.
         timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
         update_successful, grad_norm, num_zeros_in_grad = self.optimizer.step()
@@ -262,21 +258,19 @@ class MegatronRunner(object):
         if update_successful:
             # increment = get_num_microbatches() * \
             increment = self.num_microbatches_calculator.get() * \
-                        args.micro_batch_size * \
-                        args.data_parallel_size
+                args.micro_batch_size * \
+                args.data_parallel_size
             self.lr_scheduler.step(increment=increment)
             skipped_iter = 0
         else:
             skipped_iter = 1
-        
+
         if dist_env.is_pipeline_last_stage(ignore_virtual=True):
             # Average loss across microbatches.
             loss_reduced = {}
             for key in losses_reduced[0].keys():
                 if key not in loss_reduced:
                     loss_reduced[key] = 0
-                numerator = 0
-                denominator = 0
                 for x in losses_reduced:
                     val = x[key]
                     # there is one dict per microbatch. in new reporting, we average
@@ -311,7 +305,7 @@ class MegatronRunner(object):
         # set model to train mode
         for model_module in self.model:
             model_module.train()
-        
+
         logger.info('training ...')
         total_loss_dict = {}
         num_floating_point_operations_so_far = args.num_floating_point_operations_so_far
@@ -346,16 +340,16 @@ class MegatronRunner(object):
             # TODO: hook - tensorboard
             for key in loss_dict:
                 if key == "lm loss":
-                    avg = loss_dict[key].item() # noqa
+                    avg = loss_dict[key].item()  # noqa
                     if self.tensorboard_writer is not None:
                         self.tensorboard_writer.add_scalar(f'train/lm_loss', avg, iteration)
-            
+
             batch_size = dist_env.get_data_parallel_world_size() * \
-                         args.micro_batch_size * \
-                         self.num_microbatches_calculator.get()
+                args.micro_batch_size * \
+                self.num_microbatches_calculator.get()
             args.consumed_train_samples += batch_size
-            num_skipped_samples_in_batch = (get_current_global_batch_size() -
-                                            get_current_running_global_batch_size())
+            num_skipped_samples_in_batch = (get_current_global_batch_size()
+                                            - get_current_running_global_batch_size())
             if args.decrease_batch_size_if_needed:
                 assert num_skipped_samples_in_batch >= 0
             else:
@@ -368,8 +362,8 @@ class MegatronRunner(object):
             # Logging.
             loss_scale = self.optimizer.get_loss_scale().item()
             params_norm = None
-            if args.log_params_norm:
-                params_norm = calc_params_l2_norm(self.model)
+            # if args.log_params_norm:
+            #     params_norm = calc_params_l2_norm(self.model)
 
             learning_rate = None
             decoupled_learning_rate = None
@@ -384,36 +378,33 @@ class MegatronRunner(object):
                                               iteration, loss_scale,
                                               report_memory_flag, skipped_iter,
                                               grad_norm, params_norm, num_zeros_in_grad)
-            
+
             # Checkpointing
-            saved_checkpoint = False
-            if args.exit_signal_handler:
-                signal_handler = get_signal_handler()
-                if any(signal_handler.signals_received()):
-                    save_checkpoint_and_time(iteration, self.model, self.optimizer,
-                                             self.lr_scheduler,
-                                             num_floating_point_operations_so_far,
-                                             checkpointing_context, train_data_iterator=self.data_iterators['train'])
-                    print_datetime('exiting program after receiving SIGTERM.')
-                    exit = True
-                    break
+            # saved_checkpoint = False
+            # if args.exit_signal_handler:
+            #     # signal_handler = get_signal_handler()
+            #     if any(signal_handler.signals_received()):
+            #         save_checkpoint_and_time(iteration, self.model, self.optimizer,
+            #                                  self.lr_scheduler,
+            #                                  num_floating_point_operations_so_far,
+            #                                  checkpointing_context, train_data_iterator=self.data_iterators['train'])
+            #         # print_datetime('exiting program after receiving SIGTERM.')
+            #         break
 
             if args.save and args.save_interval and \
-                iteration % args.save_interval == 0:
+                    iteration % args.save_interval == 0:
                 save_checkpoint_and_time(iteration, self.model, self.optimizer,
                                          self.lr_scheduler,
                                          num_floating_point_operations_so_far,
                                          checkpointing_context, train_data_iterator=self.data_iterators['train'])
-                saved_checkpoint = True
 
             elif args.save and args.non_persistent_save_interval and \
-                iteration % args.non_persistent_save_interval == 0:
+                    iteration % args.non_persistent_save_interval == 0:
                 timers('interval-time').stop()
                 save_checkpoint_and_time(iteration, self.model, self.optimizer,
                                          self.lr_scheduler,
                                          num_floating_point_operations_so_far,
                                          non_persistent_ckpt=True, train_data_iterator=self.data_iterators['train'])
-                saved_checkpoint = True
                 timers('interval-time', log_level=0).start(barrier=True)
 
         if args.save and iteration != 0 and iteration % args.save_interval != 0:

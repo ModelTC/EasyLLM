@@ -4,7 +4,6 @@ from llm.models.mg_models.base_modules.utils import check_torch_dtype
 from llm.models.mg_models.llama.default_cfg import (
     update_embeding_config,
     update_ln_config,
-    update_transformer_layer_config,
     update_loss_config,
     _SHARED_DEFAULT_CONFIG,
     _MODEL_DEFAULT_CONFIG,
@@ -59,6 +58,7 @@ def update_shared_config(cfg):
 
     return cfg, shared_default
 
+
 def update_transformer_layer_config(cfg, shared_default, ln_cfg, num_layers, cfg_engine):
     transformer_layer_defualt = copy.deepcopy(_TRANSFROMER_LAYER_DEFAULT_CONFIG)
     transformer_engine_defualt = copy.deepcopy(_TRANSFROMER_ENGINE_DEFAULT_CONFIG)
@@ -99,6 +99,7 @@ def update_transformer_layer_config(cfg, shared_default, ln_cfg, num_layers, cfg
         raise ValueError("if glu-activation is used, please set bias-gelu-fusion to false")
 
     return transformer_layer_defualt
+
 
 def update_model_cfg(cfg):
     word_embedings_cfg = cfg.pop('word_embedings_params', {})

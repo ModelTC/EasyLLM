@@ -293,7 +293,7 @@ def load_save_func(layers_tp,
     state_dict = {}
     # if layer_id in special_layers:
     #     return
-    start = str(pp_id).zfill(5) # str(layer_id - 2).zfill(5)
+    start = str(pp_id).zfill(5)  # str(layer_id - 2).zfill(5)
     # end = str(n_layer + 1).zfill(5)
     # filename = f"pytorch_model-{start}-of-{end}.bin"
     filename = f"pytorch_model-{start}.bin"
@@ -351,11 +351,14 @@ def load_save_func(layers_tp,
             # repeats = gs
             # g_dims = tp_dt[0]["model"][name].shape[0] // (gs + 2)
             temp_weights = [tp_dt[s]["model"][name].reshape(gp, (repeats + 2) * hn, -1) for s in range(tp_size)]
-            q_proj_val = torch.cat([temp_weights[s][:, :(repeats * hn)].reshape(gp * (repeats * hn), -1) for s in range(tp_size)], dim=0).reshape(gp * (repeats * hn) * tp_size, -1)
+            q_proj_val = torch.cat([temp_weights[s][:, :(repeats * hn)].reshape(gp * (repeats * hn), -1)
+                                   for s in range(tp_size)], dim=0).reshape(gp * (repeats * hn) * tp_size, -1)
             # q_proj_val = torch.cat([tp_dt[s]["model"][name][:(g_dims * gs)] for s in range(tp_size)], dim=0)
-            k_proj_val = torch.cat([temp_weights[s][:, (repeats * hn):((repeats + 1) * hn)].reshape(gp * hn, -1) for s in range(tp_size)], dim=0).reshape(gp * hn * tp_size, -1)
+            k_proj_val = torch.cat([temp_weights[s][:, (repeats * hn):((repeats + 1) * hn)].reshape(gp * hn, -1)
+                                   for s in range(tp_size)], dim=0).reshape(gp * hn * tp_size, -1)
             # k_proj_val = torch.cat([tp_dt[s]["model"][name][(g_dims * gs):(g_dims * (gs + 1))] for s in range(tp_size)], dim=0)
-            v_proj_val = torch.cat([temp_weights[s][:, ((repeats + 1) * hn):].reshape(gp * hn, -1) for s in range(tp_size)], dim=0).reshape(gp * hn * tp_size, -1)
+            v_proj_val = torch.cat([temp_weights[s][:, ((repeats + 1) * hn):].reshape(gp * hn, -1)
+                                   for s in range(tp_size)], dim=0).reshape(gp * hn * tp_size, -1)
             # v_proj_val = torch.cat([tp_dt[s]["model"][name][(g_dims * (gs + 1)):] for s in range(tp_size)], dim=0)
             state_dict[key.replace("wqkv", "q_proj")] = q_proj_val
             state_dict[key.replace("wqkv", "k_proj")] = k_proj_val
@@ -454,7 +457,7 @@ def write_lora_model_fast(args):
     for layers_tp in layers_tps:
         layer_id = layers_tp[0]
         tps = layers_tp[1]
-        special_layers = [1, n_layer + 5]
+        special_layers = [1, layer_id + 5]
         if layer_id not in special_layers:
             continue
         tp_dt = read_tp_dt(tp_size, tps, layer_id)
@@ -466,7 +469,7 @@ def write_lora_model_fast(args):
                 if (name in WEIGHTS_TO_AVERAGE_ENDSWITH) or (name in LORA_WEIGHTS_TO_AVERAGE_ENDSWITH):
                     val = sum([tp_dt[s][name] for s in range(tp_size)])
                     val /= tp_size
-                elif (name in WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN) or (name in LORA_WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN): # noqa
+                elif (name in WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN) or (name in LORA_WEIGHTS_WITH_COLUMN_PARALLELISM_CONTAIN):  # noqa
                     val = torch.cat([tp_dt[s][name] for s in range(tp_size)], dim=0)
                 else:
                     assert False, 'Not recongnized key {}'.format(key)
@@ -491,7 +494,7 @@ def write_lora_model_fast(args):
     partial_func = partial(load_save_lora_func,
                            tp_size=tp_size,
                            state_dict=state_dict,
-                           n_layer=n_layer)
+                           n_layer=n_layer)  # noqa
     worker = int(os.environ.get('LOADWORKER', 8))
     with Pool(worker) as p:
         _ = p.map(partial_func, layers_tps)
@@ -536,9 +539,9 @@ def write_model_fast(args):
     # start = str(n_layer + 1).zfill(5)
     # end = str(n_layer + 1).zfill(5)
     # filename = f"pytorch_model-{start}-of-{end}.bin"
-    filename = f"pytorch_model.bin"
+    # filename = f"pytorch_model.bin"
     # for embendding and norm lm head
-    state_dict = {}
+    # state_dict = {}
 
     print("start saving and loading")
     from functools import partial

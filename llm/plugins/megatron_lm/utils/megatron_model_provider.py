@@ -1,3 +1,11 @@
+from megatron.core.transformer.spec_utils import import_module
+from megatron.training.yaml_arguments import core_transformer_config_from_yaml
+from megatron.training.arguments import core_transformer_config_from_args
+from megatron.training import print_rank_0
+from megatron.training import get_args
+from megatron.core.models.gpt import GPTModel
+import megatron.legacy.model
+from typing import Union
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
@@ -7,8 +15,6 @@ from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.moe.moe_layer import MoELayer
-from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
 try:
@@ -16,7 +22,6 @@ try:
         TEColumnParallelGroupedLinear,
         TEColumnParallelLinear,
         TEDotProductAttention,
-        TELayerNormColumnParallelLinear,
         TENorm,
         TERowParallelGroupedLinear,
         TERowParallelLinear,
@@ -27,7 +32,6 @@ except ImportError:
     HAVE_TE = False
 
 try:
-    import apex
 
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 
@@ -79,6 +83,8 @@ def _get_mlp_module_spec(
         )
 
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
+
+
 def get_llama_layer_with_transformer_engine_spec(
     num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
 ) -> ModuleSpec:
@@ -103,7 +109,7 @@ def get_llama_layer_with_transformer_engine_spec(
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=TENorm, # if num_experts else IdentityOp,
+            pre_mlp_layernorm=TENorm,  # if num_experts else IdentityOp,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),
@@ -120,7 +126,7 @@ def get_llama_layer_local_spec(
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
-            input_layernorm=RMSNorm, # LNImpl,
+            input_layernorm=RMSNorm,  # LNImpl,
             self_attention=ModuleSpec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.causal},
@@ -143,15 +149,6 @@ def get_llama_layer_local_spec(
         ),
     )
 
-
-from typing import Union
-import megatron.legacy.model
-from megatron.core.models.gpt import GPTModel
-from megatron.training import get_args
-from megatron.training import print_rank_0
-from megatron.training.arguments import core_transformer_config_from_args
-from megatron.training.yaml_arguments import core_transformer_config_from_yaml
-from megatron.core.transformer.spec_utils import import_module
 
 def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
     """Builds the model.
@@ -184,7 +181,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             pre_process=pre_process,
             post_process=post_process,
         )
-    else: # using core models
+    else:  # using core models
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
         else:
