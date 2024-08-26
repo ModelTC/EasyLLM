@@ -134,7 +134,7 @@ class MegatronRunner(object):
                 raise NotImplementedError('only support huggingface load mode.')
             timers('load-checkpoint').stop(barrier=True)
             timers.log(['load-checkpoint'])
-        self.start_iteration = args.iteration
+        self.start_iteration = args.iteration + 1 if args.iteration == 0 else args.iteration
 
         # get model without FP16 and/or DDP wrappers
         if args.iteration == 0 and len(unwrapped_model) == 1 \
@@ -304,6 +304,7 @@ class MegatronRunner(object):
         # Set pytorch JIT layer fusion options and warmup JIT functions.
         set_jit_fusion_options()
         # Context used for persisting some state between checkpoint saves.
+        config = get_model_config(self.model[0])
         checkpointing_context = {}
         # set model to train mode
         for model_module in self.model:
@@ -315,8 +316,28 @@ class MegatronRunner(object):
         timers('interval-time', log_level=0).start(barrier=True)
         report_memory_flag = True
         total_flops = 0.0
+        # Setup some training config params
+        config.grad_scale_func = self.optimizer.scale_loss
+        config.timers = timers
+        if isinstance(self.model[0], DDP) and args.overlap_grad_reduce:
+            assert config.no_sync_func is None, \
+                ('When overlap_grad_reduce is True, config.no_sync_func must be None; '
+                 'a custom no_sync_func is not supported when overlapping grad-reduce')
+            config.no_sync_func = [model_chunk.no_sync for model_chunk in self.model]
+            if len(self.model) == 1:
+                config.no_sync_func = config.no_sync_func[0]
+            if args.delay_grad_reduce:
+                config.grad_sync_func = [model_chunk.start_grad_sync for model_chunk in self.model]
+            if len(self.model) == 1:
+                config.grad_sync_func = config.grad_sync_func[0]
+        if args.overlap_param_gather and args.delay_param_gather:
+            config.param_sync_func = [lambda x: self.optimizer.finish_param_sync(model_index, x)
+                                      for model_index in range(len(self.model))]
+            if len(self.model) == 1:
+                config.param_sync_func = config.param_sync_func[0]
+        config.finalize_model_grads_func = finalize_model_grads
         # TODO: resume training
-        for iteration in range(self.start_iteration, self.total_train_iters):
+        for iteration in range(self.start_iteration, args.train_iters):
             self.num_microbatches_calculator.update(self.consumed_train_samples, True)
             args.curr_iteration = iteration
             loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = self.forward_step()
