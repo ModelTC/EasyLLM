@@ -8,8 +8,9 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
     from megatron.core import mpu as dist_env
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
-    get_batch_on_this_tp_rank,
+    # get_batch_on_this_tp_rank,
 )
+from llm.plugins.megatron_lm.utils.utils import get_batch_on_this_tp_rank
 from megatron.training import get_args
 from megatron.training import get_timers
 from llm.data.nlp_dataset import IGNORE_INDEX

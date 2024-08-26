@@ -1,6 +1,13 @@
 import argparse
 import deepspeed
 
+from llm.utils.general.parser_helper import (
+    _add_training_args,
+    _add_inference_args,
+    _add_medusa_args,
+    _add_distributed_args
+)
+
 
 def parse_args(ignore_unknown_args=False):
     """Parse all arguments."""

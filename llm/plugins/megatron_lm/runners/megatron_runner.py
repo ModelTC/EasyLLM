@@ -16,7 +16,7 @@ from megatron.core.enums import ModelType
 from megatron.core.utils import get_model_config
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.training.initialize import initialize_megatron, set_jit_fusion_options
+from megatron.training.initialize import set_jit_fusion_options
 from megatron.training.utils import unwrap_model
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
@@ -33,6 +33,7 @@ from megatron.core.num_microbatches_calculator import (
     get_current_running_global_batch_size
 )
 
+from llm.plugins.megatron_lm.utils.initialize import initialize_megatron
 from llm.plugins.megatron_lm.utils.parser_helper import parse_args
 from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
