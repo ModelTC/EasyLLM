@@ -2,7 +2,6 @@
 
 """Input/output checkpointing."""
 
-from logging import getLogger
 import os
 import random
 import shutil
