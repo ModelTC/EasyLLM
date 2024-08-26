@@ -57,7 +57,7 @@ class PetrelHelper(object):
     def load_data(self, path, ceph_read=True, fs_read=False, mode='r'):
         if 's3://' not in path:
             if not fs_read:
-                return open(path, mode, encoding='utf-8')
+                return open(path, mode)
             else:
                 return open(path, mode).read()
         else:

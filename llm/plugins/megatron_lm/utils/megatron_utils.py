@@ -114,7 +114,7 @@ def forward_step(data_iterator, model: GPTModel):
 def build_model_cfg(config):
     from llm.models.mg_models.llama.llama import _LLAMA_MODELS
     from llm.models.mg_models.base_modules.utils import check_keys_mapping
-    from llm.models.mg_models.llama.default_cfg import update_model_cfg
+    from llm.plugins.megatron_lm.utils.default_cfg import update_model_cfg
 
     cfg_model = config['model']
     model_type = cfg_model['type']

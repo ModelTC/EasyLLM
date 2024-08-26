@@ -1,3 +1,4 @@
+import os
 import math
 import time
 import itertools
@@ -143,11 +144,12 @@ class BatchAlignCollector(BatchCollector):
             input_ids, labels = self._pad_func(input_ids, labels)
             cu_seqlens = torch.FloatTensor([-1]).long()
             position_ids = torch.FloatTensor([-1]).long()
-        # Position ids.
-        _, seq_length = input_ids.size()
-        position_ids = torch.arange(seq_length, dtype=torch.long,
-                                    device=input_ids.device)
-        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        if os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+            # Position ids.
+            _, seq_length = input_ids.size()
+            position_ids = torch.arange(seq_length, dtype=torch.long,
+                                        device=input_ids.device)
+            position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
 
         data = dict(input_ids=input_ids,
                     labels=labels,

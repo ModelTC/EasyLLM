@@ -1,4 +1,3 @@
-import os
 import torch
 import copy
 # import torch
@@ -50,7 +49,7 @@ def update_shared_config(cfg):
     shared_default = copy.deepcopy(_SHARED_DEFAULT_CONFIG)
     model_defuault = copy.deepcopy(_MODEL_DEFAULT_CONFIG)
 
-    keep_list = ["num_layers", "hidden_size", "num_attention_heads", "num_kv_attention_heads", "intermediate_size", "parallel_output", "fp16", "bf16", "fp32_residual_connection",
+    keep_list = ["num_layers", "parallel_output", "fp16", "bf16", "fp32_residual_connection",
                  "pretrain_causal_attention", "checkpoint_activations", "checkpoint_num_layers",
                  "dynamic_checkpoint", "pp_partition_method", "sequence_parallel"]
     model_defuault.update(cfg)
@@ -241,36 +240,35 @@ def update_transformer_layer_config(cfg, shared_default, ln_cfg, num_layers, cfg
         te_params_dtype = torch.float16
     elif shared_default["params_dtype"] == "bfloat16":
         te_params_dtype = torch.bfloat16
-    if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
-        transformer_engine_config = TransformerConfig(
-            tensor_model_parallel_size=dist_env.get_tensor_model_parallel_world_size(),
-            pipeline_model_parallel_size=dist_env.get_pipeline_model_parallel_world_size(),
-            context_parallel_size=dist_env.get_context_parallel_world_size(),
-            bf16=shared_default["bf16"],
-            params_dtype=te_params_dtype,  # torch.bfloat16,
-            autocast_dtype=te_params_dtype,  # torch.bfloat16,
-            num_layers=shared_default["num_layers"],
-            hidden_size=shared_default["hidden_size"],
-            num_attention_heads=shared_default["num_attention_heads"],
-            num_query_groups=shared_default["num_kv_attention_heads"],
-            ffn_hidden_size=shared_default["intermediate_size"],
-            kv_channels=shared_default["kv_channels"],
-            layernorm_epsilon=_LAYER_NORM_DEFAULT_CONFIG["eps"],  # 1e-05,
-            pipeline_dtype=te_params_dtype,  # torch.bfloat16,
-            apply_rope_fusion=transformer_engine_defualt["te_apply_rope_fusion"],  # True,
-            sequence_parallel=shared_default["sequence_parallel"],
-            use_cpu_initialization=transformer_engine_defualt["te_use_cpu_initialization"],
-            gradient_accumulation_fusion=transformer_engine_defualt["te_gradient_accumulation_fusion"],
-            deallocate_pipeline_outputs=transformer_engine_defualt["te_deallocate_pipeline_outputs"],
-            gated_linear_unit=transformer_engine_defualt["te_gated_linear_unit"],
-            attention_softmax_in_fp32=transformer_engine_defualt["te_attention_softmax_in_fp32"],  # False
-            bias_activation_fusion=transformer_engine_defualt["te_bias_activation_fusion"],
-            masked_softmax_fusion=transformer_engine_defualt["te_masked_softmax_fusion"],  # True,
-            persist_layer_norm=transformer_engine_defualt["te_persist_layer_norm"],
-            bias_dropout_fusion=transformer_engine_defualt["te_bias_dropout_fusion"],  # True,
-            distribute_saved_activations=transformer_engine_defualt["te_distribute_saved_activations"]
-        )
-        transformer_layer_defualt["transformer_engine_config"] = transformer_engine_config
+    transformer_engine_config = TransformerConfig(
+        tensor_model_parallel_size=dist_env.get_tensor_model_parallel_world_size(),
+        pipeline_model_parallel_size=dist_env.get_pipeline_model_parallel_world_size(),
+        context_parallel_size=dist_env.get_context_parallel_world_size(),
+        bf16=shared_default["bf16"],
+        params_dtype=te_params_dtype,  # torch.bfloat16,
+        autocast_dtype=te_params_dtype,  # torch.bfloat16,
+        num_layers=shared_default["num_layers"],
+        hidden_size=shared_default["hidden_size"],
+        num_attention_heads=shared_default["num_attention_heads"],
+        num_query_groups=shared_default["num_kv_attention_heads"],
+        ffn_hidden_size=shared_default["intermediate_size"],
+        kv_channels=shared_default["kv_channels"],
+        layernorm_epsilon=_LAYER_NORM_DEFAULT_CONFIG["eps"],  # 1e-05,
+        pipeline_dtype=te_params_dtype,  # torch.bfloat16,
+        apply_rope_fusion=transformer_engine_defualt["te_apply_rope_fusion"],  # True,
+        sequence_parallel=shared_default["sequence_parallel"],
+        use_cpu_initialization=transformer_engine_defualt["te_use_cpu_initialization"],
+        gradient_accumulation_fusion=transformer_engine_defualt["te_gradient_accumulation_fusion"],
+        deallocate_pipeline_outputs=transformer_engine_defualt["te_deallocate_pipeline_outputs"],
+        gated_linear_unit=transformer_engine_defualt["te_gated_linear_unit"],
+        attention_softmax_in_fp32=transformer_engine_defualt["te_attention_softmax_in_fp32"],  # False
+        bias_activation_fusion=transformer_engine_defualt["te_bias_activation_fusion"],
+        masked_softmax_fusion=transformer_engine_defualt["te_masked_softmax_fusion"],  # True,
+        persist_layer_norm=transformer_engine_defualt["te_persist_layer_norm"],
+        bias_dropout_fusion=transformer_engine_defualt["te_bias_dropout_fusion"],  # True,
+        distribute_saved_activations=transformer_engine_defualt["te_distribute_saved_activations"]
+    )
+    transformer_layer_defualt["transformer_engine_config"] = transformer_engine_config
     return transformer_layer_defualt
 
 

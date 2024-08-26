@@ -33,15 +33,15 @@ from megatron.core.num_microbatches_calculator import (
     get_current_running_global_batch_size
 )
 
-from llm.utils.general.parser_helper import parse_args
+from llm.plugins.megatron_lm.utils.parser_helper import parse_args
 from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.utils.general.utils import get_train_iters
-from llm.utils.model.megatron_checkpointing import load_checkpoint
-from llm.utils.model.megatron_model_provider import model_provider
-from llm.utils.model.megatron_utils import forward_step, yaml2args
+from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
+from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider
+from llm.plugins.megatron_lm.utils.megatron_utils import forward_step, yaml2args
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
 

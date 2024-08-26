@@ -19,7 +19,7 @@ import argparse
 import deepspeed
 
 
-def parse_args(ignore_unknown_args=False):
+def parse_args():
     """Parse all arguments."""
     parser = argparse.ArgumentParser(description='Megatron-LM Arguments',
                                      allow_abbrev=False)
@@ -31,12 +31,7 @@ def parse_args(ignore_unknown_args=False):
     parser = _add_distributed_args(parser)
     parser = deepspeed.add_config_arguments(parser)
 
-    # args = parser.parse_args()
-    # Parse.
-    if ignore_unknown_args:
-        args, _ = parser.parse_known_args()
-    else:
-        args = parser.parse_args()
+    args = parser.parse_args()
 
     return args
 
