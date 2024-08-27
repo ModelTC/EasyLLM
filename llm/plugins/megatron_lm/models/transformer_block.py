@@ -30,6 +30,27 @@ except ImportError:
 
         LayerNormImpl = WrappedTorchLayerNorm
 
+def partition_uniform(num_items, num_parts):
+    import numpy
+    parts = [0] * (num_parts + 1)
+    # First check for the trivial edge case
+    if num_items <= num_parts:
+        for p in range(num_parts + 1):
+            parts[p] = min(p, num_items)
+        return parts
+
+    chunksize = num_items // num_parts
+    residual = num_items - (chunksize * num_parts)
+
+    parts = numpy.arange(0, (num_parts + 1) * chunksize, chunksize)
+
+    for i in range(residual):
+        parts[i + 1:] += 1
+    parts = parts.tolist()
+
+    return parts
+
+
 def get_num_layers_to_build(config: TransformerConfig) -> int:
 
     # pipeline_ranks = config.pipeline_model_parallel_size
@@ -42,8 +63,13 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
 
     # Each stage gets a simple uniform number of layers.
     if method == 'uniform':
-        num_layers = len(config.num_layers)
-        # self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
+        num_layers = config.num_layers
+        parts = partition_uniform(num_items=num_layers, num_parts=mpu.get_pipeline_model_parallel_world_size())
+        # recompute for megatron-lm
+        for idx in range(len(parts) - 1, 0, -1):
+            parts[idx] = parts[idx] - parts[idx - 1]
+        parts.pop(0)
+        num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method == 'parameters':
         ## TODO
         pass
@@ -56,6 +82,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         for idx in range(len(parts) - 1, 0, -1):
             parts[idx] = parts[idx] - parts[idx - 1]
         parts.pop(0)
+        num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method.startswith('type:'):
         ## TODO
         pass
@@ -64,7 +91,6 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
     else:
         raise NotImplementedError(f'Partitioning method {method} not implemented.')
     
-    num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
 
     if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
         # Interleaved pipeline parallelism:

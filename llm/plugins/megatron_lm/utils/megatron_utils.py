@@ -144,7 +144,7 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     from megatron.training.global_vars import set_global_variables
     cfg_model = build_model_cfg(config)
     args = parse_args_mg(extra_args_provider, ignore_unknown_args)
-    args.pp_partition_method = config['model']['kwargs']['pp_partition_method']
+    args.pp_partition_method = config['model']['kwargs'].get('pp_partition_method', "uniform")
 
     args.num_layers = cfg_model['num_layers']
     args.hidden_size = cfg_model['hidden_size']
