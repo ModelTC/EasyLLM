@@ -30,6 +30,7 @@ except Exception:
 
 from llm.utils.general.log_helper import default_logger as logger
 from megatron.training.checkpointing import set_checkpoint_version, get_checkpoint_version
+from megatron.core import mpu
 
 
 def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
@@ -293,8 +294,13 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
         # model_state_dict["language_model.output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
         model_state_dict["output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
 
-    def layer_update(pp_i):
-        ori_i = pp_n_layer * pp_rank + pp_i
+    def layer_update(pp_i, parts):
+        pp_rank = mpu.get_pipeline_model_parallel_rank()
+        pre_idx = 0
+        for _ in range(pp_rank):
+            pre_idx += parts[_]
+        ori_i = pre_idx + pp_i
+        # ori_i = pp_n_layer * pp_rank + pp_i 
         qw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.q_proj.weight"), tp_size, tp_rank)
         kw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.k_proj.weight"), tp_size, tp_rank)
         vw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.v_proj.weight"), tp_size, tp_rank)
@@ -327,8 +333,36 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
         model_state_dict[f"decoder.layers.{pp_i}.pre_mlp_layernorm.weight"].copy_(get_weight_from_name(
             f"model.layers.{ori_i}.post_attention_layernorm.weight").clone())
 
+    method = args.pp_partition_method
+    method = method.lower()
+    # Each stage gets a simple uniform number of layers.
+    if method == 'uniform':
+        num_layers = len(config.num_layers)
+        # self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
+    elif method == 'parameters':
+        ## TODO
+        pass
+        # param_counts = self._count_layer_params()
+        # self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
+    elif "manual" in method:
+        parts = method.split("manual:")[1].split(',')
+        parts = [int(item) for item in parts]
+        # recompute for megatron-lm
+        for idx in range(len(parts) - 1, 0, -1):
+            parts[idx] = parts[idx] - parts[idx - 1]
+        parts.pop(0)
+    elif method.startswith('type:'):
+        ## TODO
+        pass
+    elif method == 'profile':
+        raise NotImplementedError(f'Partitioning method {method} not implemented.')
+    else:
+        raise NotImplementedError(f'Partitioning method {method} not implemented.')
+    
+    # num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
+    pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
     for pp_i in range(pp_n_layer):
-        layer_update(pp_i)
+        layer_update(pp_i, parts)
 
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()
