@@ -46,6 +46,7 @@ except ImportError:
     LNImpl = WrappedTorchLayerNorm
 
 from megatron.legacy.model.rms_norm import RMSNorm
+from llm.plugins.megatron_lm.models.gpt_model import LlaMAModel
 
 
 # Helper function to get module spec for MLP/MoE
@@ -190,7 +191,8 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             else:
                 transformer_layer_spec = get_llama_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
 
-        model = GPTModel(
+        # model = GPTModel(
+        model = LlaMAModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
             vocab_size=args.padded_vocab_size,
