@@ -214,3 +214,10 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     set_global_variables(args, build_tokenizer=False)
 
     args.variable_seq_lengths = config['runtime'].get('dynamic', False)
+
+    # dynamic checkpoint
+    if cfg_model['dynamic_checkpoint']['enabled']:
+        args.recompute_granularity = 'full'
+        if cfg_model['dynamic_checkpoint'].get('size_map', None):
+            args.recompute_method = 'dynamic_seqlen'
+            args.seq_len_to_recompute_layer = cfg_model['dynamic_checkpoint']['size_map']
