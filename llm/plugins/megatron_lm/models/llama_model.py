@@ -5,16 +5,15 @@ from megatron.core import mpu
 from megatron.training import get_args
 from megatron.core import tensor_parallel
 from megatron.core.models.gpt.gpt_model import GPTModel
+from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
-        TEDelayedScaling,
         TENorm,
         get_cpu_offload_context,
-        te_checkpoint,
     )
 
     HAVE_TE = True
@@ -23,7 +22,7 @@ except ImportError:
     HAVE_TE = False
     get_cpu_offload_context = None
     try:
-        import apex
+        import apex  # noqa
 
         LayerNormImpl = FusedLayerNorm
     except ModuleNotFoundError:
@@ -50,9 +49,9 @@ class LlaMAModel(GPTModel):
         parallel_output (bool, optional): Do not gather the outputs, keep them split across tensor parallel ranks. Defaults to True.
         share_embeddings_and_output_weights (bool, optional): When True, input embeddings and output logit weights are shared. Defaults to False.
         position_embedding_type (Literal[learned_absolute,rope], optional):  Position embedding type.. Defaults to 'learned_absolute'.
-        rotary_percent (float, optional): Percent of rotary dimension to use for rotary position embeddings. Ignored unless position_embedding_type is 'rope'. Defaults to 1.0.
+        rotary_percent (float, optional): Percent of rotary dimension to use for rotary position embeddings. Ignored unless position_embedding_type is 'rope'. Defaults to 1.0.  # noqa
         rotary_base (int, optional): Base period for rotary position embeddings. Ignored unless position_embedding_type is 'rope'. Defaults to 10000.
-        seq_len_interpolation_factor (Optional[float], optional): scale of linearly interpolating RoPE for longer sequences. The value must be a float larger than 1.0. Defaults to None.
+        seq_len_interpolation_factor (Optional[float], optional): scale of linearly interpolating RoPE for longer sequences. The value must be a float larger than 1.0. Defaults to None.  # noqa
     """
 
     def __init__(
@@ -124,6 +123,7 @@ class LlaMAModel(GPTModel):
         params = filter(lambda p: p.requires_grad, layer.parameters())
         param_counts[0] = sum(p.numel() for p in params)
         # transformer layer & final norm
+
         def build_layer(layer_spec, layer_number):
             return build_module(
                 layer_spec,
@@ -164,7 +164,7 @@ class LlaMAModel(GPTModel):
             bias=False,
             skip_bias_add=False,
             gather_output=not self.parallel_output,
-            skip_weight_param_allocation=False, # self.pre_process
+            skip_weight_param_allocation=False,  # self.pre_process
             # and self.share_embeddings_and_output_weights,
             embedding_activation_buffer=self.embedding_activation_buffer,
             grad_output_buffer=self.grad_output_buffer,
@@ -172,6 +172,7 @@ class LlaMAModel(GPTModel):
         params = filter(lambda p: p.requires_grad, layer.parameters())
         param_counts[self.config.num_layers + 2] = sum(p.numel() for p in params)
         # partition
+
         def partition_uniform(num_items, num_parts):
             import numpy
             parts = [0] * (num_parts + 1)

@@ -30,7 +30,6 @@ except Exception:
 
 from llm.utils.general.log_helper import default_logger as logger
 from megatron.training.checkpointing import set_checkpoint_version, get_checkpoint_version
-from megatron.core import mpu
 
 
 def _load_base_checkpoint(load_dir, rank0=False, sharded_state_dict=None,
@@ -300,7 +299,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
         for _ in range(pp_rank):
             pre_idx += parts[_]
         ori_i = pre_idx + pp_i
-        # ori_i = pp_n_layer * pp_rank + pp_i 
+        # ori_i = pp_n_layer * pp_rank + pp_i
         qw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.q_proj.weight"), tp_size, tp_rank)
         kw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.k_proj.weight"), tp_size, tp_rank)
         vw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.v_proj.weight"), tp_size, tp_rank)

@@ -13,7 +13,6 @@ from megatron.core.packed_seq_params import PackedSeqParams
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
-        TEDelayedScaling,
         TENorm,
         get_cpu_offload_context,
         te_checkpoint,
@@ -25,13 +24,14 @@ except ImportError:
     HAVE_TE = False
     get_cpu_offload_context = None
     try:
-        import apex
+        import apex  # noqa
 
-        LayerNormImpl = FusedLayerNorm
+        LayerNormImpl = FusedLayerNorm  # noqa
     except ModuleNotFoundError:
         from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
 
         LayerNormImpl = WrappedTorchLayerNorm
+
 
 def partition_uniform(num_items, num_parts):
     import numpy
@@ -61,7 +61,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
     # num_layers_per_pipeline_rank = config.num_layers // pipeline_ranks
     args = get_args()
     method = args.pp_partition_method
-    
+
     method = method.lower()
 
     # Each stage gets a simple uniform number of layers.
@@ -75,7 +75,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         args.pp_partition_parts = parts
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method == 'parameters':
-        ## TODO
+        # TODO
         parts = args.pp_partition_parts
         assert parts is not None, "parameters type parts should not be None."
         # recompute for megatron-lm
@@ -96,13 +96,12 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         args.pp_partition_parts = parts
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method.startswith('type:'):
-        ## TODO
+        # TODO
         pass
     elif method == 'profile':
         raise NotImplementedError(f'Partitioning method {method} not implemented.')
     else:
         raise NotImplementedError(f'Partitioning method {method} not implemented.')
-    
 
     if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
         # Interleaved pipeline parallelism:
@@ -131,6 +130,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         num_layers_to_build = num_layers_per_pipeline_rank
 
     return num_layers_to_build
+
 
 def _get_block_submodules(
     config: TransformerConfig,
@@ -181,9 +181,7 @@ class DynamicTransformerBlock(TransformerBlock):
         self._build_layers()
         self.num_layers_per_pipeline_rank = len(self.layers)
 
-        if (self.config.recompute_granularity == 'full' and \
-            self.config.recompute_method == 'dynamic_seqlen'
-        ):
+        if (self.config.recompute_granularity == 'full' and self.config.recompute_method == 'dynamic_seqlen'):
             args = get_args()
             self._seq_len_to_recompute_layer = args.seq_len_to_recompute_layer
 
@@ -249,13 +247,13 @@ class DynamicTransformerBlock(TransformerBlock):
             # Uniformly divide the total number of Transformer layers and checkpoint
             # the input activation of each divided chunk.
             # A method to further reduce memory usage reducing checkpoints.
-            l = 0
+            l = 0  # noqa
             while l < self.num_layers_per_pipeline_rank:
                 hidden_states, context = checkpoint_handler(
                     custom(l, l + self.config.recompute_num_layers)
                 )
 
-                l += self.config.recompute_num_layers
+                l += self.config.recompute_num_layers  # noqa
 
         elif self.config.recompute_method == 'block':
             # Checkpoint the input activation of only a set number of individual
@@ -269,7 +267,7 @@ class DynamicTransformerBlock(TransformerBlock):
                 if self.config.fp8 and not hidden_states.requires_grad:
                     recompute_skip_num_layers += 1
                 if (
-                    l >= recompute_skip_num_layers
+                    l >= recompute_skip_num_layers  # noqa
                     and l < self.config.recompute_num_layers + recompute_skip_num_layers
                 ):
                     hidden_states, context = checkpoint_handler(custom(l, l + 1))
