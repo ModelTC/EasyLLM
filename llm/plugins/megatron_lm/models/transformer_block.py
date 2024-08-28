@@ -69,6 +69,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         for idx in range(len(parts) - 1, 0, -1):
             parts[idx] = parts[idx] - parts[idx - 1]
         parts.pop(0)
+        args.pp_partition_parts = parts
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method == 'parameters':
         ## TODO
@@ -78,6 +79,9 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         for idx in range(len(parts) - 1, 0, -1):
             parts[idx] = parts[idx] - parts[idx - 1]
         parts.pop(0)
+        parts[0] -= 1
+        parts[-1] -= 2
+        args.pp_partition_parts = parts
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif "manual" in method:
         parts = method.split("manual:")[1].split(',')
@@ -86,6 +90,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         for idx in range(len(parts) - 1, 0, -1):
             parts[idx] = parts[idx] - parts[idx - 1]
         parts.pop(0)
+        args.pp_partition_parts = parts
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method.startswith('type:'):
         ## TODO

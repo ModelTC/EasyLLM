@@ -32,6 +32,8 @@ except ImportError:
         LayerNormImpl = WrappedTorchLayerNorm
 
 from .transformer_block import DynamicTransformerBlock
+from megatron.core.transformer.transformer_block import TransformerBlock, TransformerBlockSubmodules
+from megatron.core.transformer.transformer_layer import BaseTransformerLayer
 
 
 class LlaMAModel(GPTModel):
@@ -88,6 +90,12 @@ class LlaMAModel(GPTModel):
         # update pp partition method - parameters args
         self.transformer_layer_spec = transformer_layer_spec
         self.position_embedding_type = position_embedding_type
+        if self.config.defer_embedding_wgrad_compute:
+            self.embedding_activation_buffer = []
+            self.grad_output_buffer = []
+        else:
+            self.embedding_activation_buffer = None
+            self.grad_output_buffer = None
         self.update_parameters_pp_partition()
 
         # Transformer.
@@ -134,10 +142,11 @@ class LlaMAModel(GPTModel):
                 )
             else:
                 raise Exception(f"specialize for {self.transformer_layer_spec.module.module.__name__}.")
-        layer = build_layer(spec.layer_specs, 1)
+        layer = build_layer(spec.layer_specs[0], 1)
         params = filter(lambda p: p.requires_grad, layer.parameters())
+        temp = sum(p.numel() for p in params)
         for _ in range(1, self.config.num_layers + 1):
-            param_counts[_] = sum(p.numel() for p in params)
+            param_counts[_] = temp
         layer = build_module(
             spec.layer_norm,
             config=self.config,
@@ -155,8 +164,8 @@ class LlaMAModel(GPTModel):
             bias=False,
             skip_bias_add=False,
             gather_output=not self.parallel_output,
-            skip_weight_param_allocation=self.pre_process
-            and self.share_embeddings_and_output_weights,
+            skip_weight_param_allocation=False, # self.pre_process
+            # and self.share_embeddings_and_output_weights,
             embedding_activation_buffer=self.embedding_activation_buffer,
             grad_output_buffer=self.grad_output_buffer,
         )

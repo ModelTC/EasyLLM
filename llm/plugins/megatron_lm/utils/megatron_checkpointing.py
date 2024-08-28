@@ -333,33 +333,7 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
         model_state_dict[f"decoder.layers.{pp_i}.pre_mlp_layernorm.weight"].copy_(get_weight_from_name(
             f"model.layers.{ori_i}.post_attention_layernorm.weight").clone())
 
-    method = args.pp_partition_method
-    method = method.lower()
-    # Each stage gets a simple uniform number of layers.
-    if method == 'uniform':
-        num_layers = len(config.num_layers)
-        # self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
-    elif method == 'parameters':
-        ## TODO
-        pass
-        # param_counts = self._count_layer_params()
-        # self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
-    elif "manual" in method:
-        parts = method.split("manual:")[1].split(',')
-        parts = [int(item) for item in parts]
-        # recompute for megatron-lm
-        for idx in range(len(parts) - 1, 0, -1):
-            parts[idx] = parts[idx] - parts[idx - 1]
-        parts.pop(0)
-    elif method.startswith('type:'):
-        ## TODO
-        pass
-    elif method == 'profile':
-        raise NotImplementedError(f'Partitioning method {method} not implemented.')
-    else:
-        raise NotImplementedError(f'Partitioning method {method} not implemented.')
-    
-    # num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
+    parts = args.pp_partition_parts
     pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
     for pp_i in range(pp_n_layer):
         layer_update(pp_i, parts)
