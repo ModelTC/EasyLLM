@@ -72,9 +72,13 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
         num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif method == 'parameters':
         ## TODO
-        pass
-        # param_counts = self._count_layer_params()
-        # self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
+        parts = args.pp_partition_parts
+        assert parts is not None, "parameters type parts should not be None."
+        # recompute for megatron-lm
+        for idx in range(len(parts) - 1, 0, -1):
+            parts[idx] = parts[idx] - parts[idx - 1]
+        parts.pop(0)
+        num_layers_per_pipeline_rank = parts[mpu.get_pipeline_model_parallel_rank()]
     elif "manual" in method:
         parts = method.split("manual:")[1].split(',')
         parts = [int(item) for item in parts]
@@ -107,6 +111,7 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
 
         vp_size = parallel_state.get_virtual_pipeline_model_parallel_world_size()
 
+        assert num_layers_per_pipeline_rank % vp_size == 0, "number of layers per pipe stage should be divided by vp_size."
         num_layers_per_virtual_rank = num_layers_per_pipeline_rank // vp_size
 
         num_layers_to_build = num_layers_per_virtual_rank

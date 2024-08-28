@@ -46,7 +46,7 @@ except ImportError:
     LNImpl = WrappedTorchLayerNorm
 
 from megatron.legacy.model.rms_norm import RMSNorm
-from llm.plugins.megatron_lm.models.gpt_model import LlaMAModel
+from llm.plugins.megatron_lm.models.llama_model import LlaMAModel
 
 
 # Helper function to get module spec for MLP/MoE
