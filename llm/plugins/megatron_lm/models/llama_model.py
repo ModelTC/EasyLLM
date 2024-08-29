@@ -30,9 +30,13 @@ except ImportError:
 
         LayerNormImpl = WrappedTorchLayerNorm
 
-from .transformer_block import DynamicTransformerBlock
+# from .transformer_block import DynamicTransformerBlock
 from megatron.core.transformer.transformer_block import TransformerBlock, TransformerBlockSubmodules
 from megatron.core.transformer.transformer_layer import BaseTransformerLayer
+from .utils import (
+    partition_uniform,
+    partition_balanced
+)
 
 
 class LlaMAModel(GPTModel):
@@ -70,202 +74,270 @@ class LlaMAModel(GPTModel):
         rotary_base: int = 10000,
         seq_len_interpolation_factor: Optional[float] = None,
     ) -> None:
-        super().__init__(
-            config=config,
-            transformer_layer_spec=transformer_layer_spec,
-            vocab_size=vocab_size,
-            max_sequence_length=max_sequence_length,
-            pre_process=pre_process,
-            post_process=post_process,
-            fp16_lm_cross_entropy=fp16_lm_cross_entropy,
-            parallel_output=parallel_output,
-            share_embeddings_and_output_weights=share_embeddings_and_output_weights,
-            position_embedding_type=position_embedding_type,
-            rotary_percent=rotary_percent,
-            rotary_base=rotary_base,
-            seq_len_interpolation_factor=seq_len_interpolation_factor
-        )
+        super().__init__(config=config)
 
-        # update pp partition method - parameters args
-        self.transformer_layer_spec = transformer_layer_spec
+        if has_config_logger_enabled(config):
+            log_config_to_disk(config, locals(), prefix=type(self).__name__)
+
+        self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
+        self.vocab_size = vocab_size
+        self.max_sequence_length = max_sequence_length
+        self.pre_process = pre_process
+        self.post_process = post_process
+        self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
+        self.parallel_output = parallel_output
+        self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.position_embedding_type = position_embedding_type
+
+        # megatron core pipelining currently depends on model type
+        # TODO: remove this dependency ?
+        self.model_type = ModelType.encoder_or_decoder
+
+        # partition
+        self.module_list = self.build_module_list()
+        # initialize partition
+        self._partition_layers()
+
+        # These 2 attributes are needed for TensorRT-LLM export.
+        self.max_position_embeddings = max_sequence_length
+        self.rotary_percent = rotary_percent
+
+        if self.position_embedding_type == 'rope':
+            self.rotary_pos_emb = RotaryEmbedding(
+                kv_channels=self.config.kv_channels,
+                rotary_percent=rotary_percent,
+                rotary_interleaved=self.config.rotary_interleaved,
+                seq_len_interpolation_factor=seq_len_interpolation_factor,
+                rotary_base=rotary_base,
+                use_cpu_initialization=self.config.use_cpu_initialization,
+            )
+        # model build
+        self.forward_funcs = []
+        self.build()
+
+        if self.pre_process or self.post_process:
+            self.setup_embeddings_and_output_layer()
+        
+        if has_config_logger_enabled(self.config):
+            log_config_to_disk(
+                self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
+            )
+
+    def build(self):
+        for local_idx, layer in enumerate(self.part_module_list):
+            layer_idx = local_idx + self._local_start
+
+            module = layer["type"](**layer["kwargs"])
+            name = str(layer_idx)
+            self.forward_funcs.append(module)
+            self.add_module(name, module)
+
+    def _partition_layers(self):
+        num_stages = mpu.get_pipeline_model_parallel_world_size()
+        stage_id = mpu.get_pipeline_model_parallel_rank()
+
+        args = gets_args()
+        method = args.pp_partition_method
+        method = method.lower()
+
+        if method == "uniform":
+            num_layers = len(self.module_list)
+            self.parts = partition_uniform(num_items=num_layers, num_parts=num_stages)
+        elif method == "parameters":
+            param_counts = self._count_layer_params()
+            self.parts = partition_balanced(weights=param_counts, num_parts=num_stages)
+        elif "manual" in method:
+            parts = method.split("manual:")[1].split(',')
+            self.parts = [int(item) for item in parts]
+        elif method.startswith('type:'):
+            # TODO
+            pass
+        elif method == 'profile':
+            raise NotImplementedError(f'Partitioning method {method} not implemented.')
+        else:
+            raise NotImplementedError(f'Partitioning method {method} not implemented.')
+
+        # Print some information on the partitioning.
+        if self.global_rank == 0:
+            for stage in range(num_stages):
+                start = self.parts[stage]
+                stop = self.parts[stage + 1]
+                print(f'stage={stage} layers={stop - start}')
+                for idx, layer in enumerate(self.specs[start:stop]):
+                    name = str(layer)
+                    if isinstance(layer, LayerSpec):
+                        name = layer.typename.__name__
+                    if isinstance(layer, nn.Module):
+                        name = layer.__class__.__name__
+                    else:
+                        try:
+                            name = layer.__name__
+                        except AttributeError:
+                            pass
+                    print(f'    {idx+start:2d}: {name}')
+        # setting according module list
+        self._local_start = self.parts[stage_id]
+        self._local_stop = self.parts[stage_id + 1]
+        self.part_module_list = self.module_list[self._local_start:self._local_stop]
+
+    def _count_layer_params(self):
+        """Count the trainable parameters in individual layers.
+
+        This routine will only build one layer at a time.
+
+        Returns:
+            A list of the number of parameters in each layer.
+        """
+        param_counts = [0] * len(self.module_list)
+        for idx, layer in enumerate(self.module_list):
+            module_type = layer["type"]
+            kwargs = layer["kwargs"]
+            l = module_type(**kwargs)
+            params = filter(lambda p: p.requires_grad, l.parameters())
+            param_counts[idx] = sum(p.numel() for p in params)
+        return param_counts
+
+    def build_module_list(self):
+        module_list = list()
+        # embedding
+        embedding_param = dict(
+            name="word_embedding",
+            type=LanguageModelEmbedding,
+            kwargs=dict(
+                config=self.config,
+                vocab_size=self.vocab_size,
+                max_sequence_length=self.max_sequence_length,
+                position_embedding_type=self.position_embedding_type
+            )
+        )
+        module_list.append(embedding_param)
+        # transformer layer
+        transformer_layer_params = dict(
+            name="decoder_layer",
+            type=TransformerLayer,
+            kwargs=dict(
+                config=self.config
+            )
+        )
+        if hasattr(self.transformer_layer_spec, "submodules") and self.transformer_layer_spec.submodules is not None:
+            transformer_layer_params["kwargs"]["submodules"] = self.transformer_layer_spec.submodules
+        for layer_idx in range(self.config.num_layers):
+            transformer_layer_params["layer_number"] = layer_idx + 1
+            module_list.append(transformer_layer_params)
+        # final layernorm after transformer layers
+        layer_norm_params = dict(
+            name="layernorm_before_head",
+            type=LayerNormImpl,
+            kwargs=dict(
+                config=self.config,
+                hidden_size=self.config.hidden_size,
+                eps=self.config.layernorm_epsilon
+            )
+        )
+        module_list.append(layer_norm_params)
+        # lm head
         if self.config.defer_embedding_wgrad_compute:
+            # The embedding activation buffer preserves a reference to the input activations
+            # of the final embedding projection layer GEMM. It will hold the activations for
+            # all the micro-batches of a global batch for the last pipeline stage. Once we are
+            # done with all the back props for all the microbatches for the last pipeline stage,
+            # it will be in the pipeline flush stage. During this pipeline flush we use the
+            # input activations stored in embedding activation buffer and gradient outputs stored
+            # in gradient buffer to calculate the weight gradients for the embedding final linear layer.
             self.embedding_activation_buffer = []
             self.grad_output_buffer = []
         else:
             self.embedding_activation_buffer = None
             self.grad_output_buffer = None
-        self.update_parameters_pp_partition()
-
-        # Transformer.
-        self.decoder = DynamicTransformerBlock(
-            config=self.config,
-            spec=transformer_layer_spec,
-            pre_process=self.pre_process,
-            post_process=self.post_process,
-        )
-
-    def update_parameters_pp_partition(self):
-        args = get_args()
-        if args.pp_partition_method != "parameters":
-            return
-
-        # count layer params
-        num_layers = 1 + self.config.num_layers + 1 + 1
-        param_counts = [0] * num_layers
-        # word embedding
-        layer = LanguageModelEmbedding(
-            config=self.config,
-            vocab_size=self.vocab_size,
-            max_sequence_length=self.max_sequence_length,
-            position_embedding_type=self.position_embedding_type,
-        )
-        params = filter(lambda p: p.requires_grad, layer.parameters())
-        param_counts[0] = sum(p.numel() for p in params)
-        # transformer layer & final norm
-
-        def build_layer(layer_spec, layer_number):
-            return build_module(
-                layer_spec,
+        lm_head_params = dict(
+            name="lm_head",
+            type=tensor_parallel.ColumnParallelLinear,
+            kwargs=dict(
+                input_size=self.config.hidden_size,
+                output_size=self.vocab_size,
                 config=self.config,
-                layer_number=layer_number,
+                init_method=self.config.init_method,
+                bias=False,
+                skip_bias_add=False,
+                gather_output=not self.parallel_output,
+                skip_weight_param_allocation=False, # self.pre_process and self.share_embeddings_and_output_weights,
+                embedding_activation_buffer=self.embedding_activation_buffer,
+                grad_output_buffer=self.grad_output_buffer,
             )
+        )
+        module_list.append(lm_head_params)
 
-        spec = self.transformer_layer_spec
-        if isinstance(self.transformer_layer_spec, ModuleSpec):
-            if issubclass(self.transformer_layer_spec.module, TransformerBlock):
-                spec = self.transformer_layer_spec.submodules
-            elif issubclass(self.transformer_layer_spec.module, BaseTransformerLayer):
-                spec = TransformerBlockSubmodules(
-                    layer_specs=[self.transformer_layer_spec],
-                    layer_norm=LayerNormImpl,
+        return module_list
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        decoder_input: Tensor = None,
+        labels: Tensor = None,
+        inference_params: InferenceParams = None,
+        packed_seq_params: PackedSeqParams = None,
+        extra_block_kwargs: dict = None,
+    ) -> Tensor:
+        rotary_pos_emb = None
+        if decoder_input is not None:
+            pass
+        elif self.pre_process:
+            decoder_input = input_ids
+        else:
+            # intermediate stage of pipeline
+            # decoder will get hidden_states from encoder.input_tensor
+            decoder_input = None
+
+        if repr(self.module_list[self._local_start]) == "TransformerLayer":
+            if self.position_embedding_type == 'rope':
+                rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+                    inference_params, self.decoder, decoder_input, self.config
                 )
-            else:
-                raise Exception(f"specialize for {self.transformer_layer_spec.module.module.__name__}.")
-        layer = build_layer(spec.layer_specs[0], 1)
-        params = filter(lambda p: p.requires_grad, layer.parameters())
-        temp = sum(p.numel() for p in params)
-        for _ in range(1, self.config.num_layers + 1):
-            param_counts[_] = temp
-        layer = build_module(
-            spec.layer_norm,
-            config=self.config,
-            hidden_size=self.config.hidden_size,
-            eps=self.config.layernorm_epsilon,
-        )
-        params = filter(lambda p: p.requires_grad, layer.parameters())
-        param_counts[self.config.num_layers + 1] = sum(p.numel() for p in params)
-        # lm_head
-        layer = tensor_parallel.ColumnParallelLinear(
-            self.config.hidden_size,
-            self.vocab_size,
-            config=self.config,
-            init_method=self.config.init_method,
-            bias=False,
-            skip_bias_add=False,
-            gather_output=not self.parallel_output,
-            skip_weight_param_allocation=False,  # self.pre_process
-            # and self.share_embeddings_and_output_weights,
-            embedding_activation_buffer=self.embedding_activation_buffer,
-            grad_output_buffer=self.grad_output_buffer,
-        )
-        params = filter(lambda p: p.requires_grad, layer.parameters())
-        param_counts[self.config.num_layers + 2] = sum(p.numel() for p in params)
-        # partition
+                rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
+        
+        for idx in range(len(self.forward_funcs)):
+            if self.pre_process and idx == 0:
+                # embeddings
+                decoder_input = self.forward_funcs[idx](input_ids=decoder_input, position_ids=position_ids)
+            elif repr(self.module_list[self._local_start + idx]) == "TransformerLayer":
+                decoder_input, context = self.forward_funcs[idx](
+                    hidden_states=decoder_input,
+                    attention_mask=attention_mask,
+                    context=context,
+                    context_mask=context_mask,
+                    rotary_pos_emb=rotary_pos_emb,
+                    inference_params=inference_params,
+                    packed_seq_params=packed_seq_params,
+                )
+            elif repr(self.module_list[self._local_start + idx]) == "LayerNormImpl":
+                decoder_input = self.forward_funcs[idx](decoder_input)
+            elif repr(self.module_list[self._local_start + idx]) == "tensor_parallel.ColumnParallelLinear":
+                # logits and loss
+                output_weight = None
+                if self.share_embeddings_and_output_weights:
+                    output_weight = self.shared_embedding_or_output_weight()
+                logits, _ = self.output_layer(decoder_input, weight=output_weight)
 
-        def partition_uniform(num_items, num_parts):
-            import numpy
-            parts = [0] * (num_parts + 1)
-            # First check for the trivial edge case
-            if num_items <= num_parts:
-                for p in range(num_parts + 1):
-                    parts[p] = min(p, num_items)
-                return parts
+                if has_config_logger_enabled(self.config):
+                    payload = OrderedDict(
+                        {
+                            'input_ids': input_ids,
+                            'position_ids': position_ids,
+                            'attention_mask': attention_mask,
+                            'decoder_input': decoder_input,
+                            'logits': logits,
+                        }
+                    )
+                    log_config_to_disk(self.config, payload, prefix='input_and_logits')
 
-            chunksize = num_items // num_parts
-            residual = num_items - (chunksize * num_parts)
-
-            parts = numpy.arange(0, (num_parts + 1) * chunksize, chunksize)
-
-            for i in range(residual):
-                parts[i + 1:] += 1
-            parts = parts.tolist()
-
-            return parts
-
-        def prefix_sum_inc(weights):
-            """ Compute an inclusive prefix sum.
-
-            Example:
-                >>> prefix_sum_inc([3,4,5])
-                [3, 7, 12]
-            """
-            weights_ = [w for w in weights]
-            for x in range(1, len(weights_)):
-                weights_[x] += weights_[x - 1]
-            return weights_
-
-        def _lprobe(weights, num_parts, bottleneck):
-            num_items = len(weights)
-            total_weight = weights[-1]
-
-            # initialize partitioning
-            parts = [0] * (num_parts + 1)
-            for p in range(1, num_parts + 1):
-                parts[p] = num_items
-
-            bsum = bottleneck  # running sum of target weight for pth partition
-            chunksize = num_items // num_parts
-            step = chunksize
-            for p in range(1, num_parts):
-                # Jump to the next bucket
-                while (step < num_items) and (weights[step] < bsum):
-                    step += chunksize
-
-                # Find the end index of partition p
-                parts[p] = bisect_left(weights, bsum, lo=step - chunksize, hi=min(step, num_items))
-                # Nothing more to partition, return early
-                if parts[p] == num_items:
-                    # See if the current partition is overweight.
-                    part_size = weights[-1] - weights[parts[p - 1]]
-                    return parts, part_size < bottleneck
-
-                # Next partition target
-                bsum = weights[parts[p] - 1] + bottleneck
-
-            return parts, bsum >= total_weight
-
-        def _rb_partition_balanced(weights, num_parts, eps):
-            total_weight = weights[-1]
-            lower = total_weight / num_parts  # best case heaviest partition
-            upper = total_weight  # worst case heaviest partition
-
-            # Do a binary search for the best partitioning
-            while upper > lower + eps:
-                mid = lower + ((upper - lower) / 2)
-                parts, success = _lprobe(weights, num_parts, mid)
-                if success:
-                    upper = mid
+                if labels is None:
+                    # [s b h] => [b s h]
+                    # return logits.transpose(0, 1).contiguous()
+                    decoder_input = logits.transpose(0, 1).contiguous()
                 else:
-                    lower = mid + eps
-            return upper
+                    # loss
+                    decoder_input = self.compute_language_model_loss(labels, logits)
 
-        def partition_balanced(weights, num_parts, eps=1e-3):
-            num_items = len(weights)
-            # First check for the trivial edge case
-            if num_items <= num_parts:
-                return partition_uniform(num_items, num_parts)
-
-            weights_ = prefix_sum_inc(weights)
-
-            # Find the smallest bottleneck (weight of heaviest partition)
-            bottleneck = _rb_partition_balanced(weights_, num_parts, eps=eps)
-
-            # Now compute that partitioning
-            parts, success = _lprobe(weights_, num_parts, bottleneck)
-            assert success
-
-            return parts
-
-        parts = partition_balanced(weights=param_counts, num_parts=mpu.get_pipeline_model_parallel_world_size())
-        args.pp_partition_parts = parts
+        return decoder_input
