@@ -3,6 +3,7 @@
 """Input/output checkpointing."""
 
 import os
+import copy
 import random
 import sys
 
@@ -286,28 +287,29 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
     model_state_dict = model[0].state_dict()
     if pp_rank == 0:
         # model_state_dict["language_model.embedding.word_embeddings.weight"].copy_(row_split(emb_w, tp_size, tp_rank))
-        model_state_dict["embedding.word_embeddings.weight"].copy_(row_split(emb_w, tp_size, tp_rank))
+        # model_state_dict["embedding.word_embeddings.weight"].copy_(row_split(emb_w, tp_size, tp_rank))
+        model_state_dict["0.word_embeddings.weight"].copy_(row_split(emb_w, tp_size, tp_rank))
     if pp_rank == pp_size - 1:
         # model_state_dict["language_model.encoder.final_layernorm.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
-        model_state_dict["decoder.final_layernorm.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
+        # model_state_dict["decoder.final_layernorm.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
+        model_state_dict[f"{n_layer + 2}.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
         # model_state_dict["language_model.output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
         model_state_dict["output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
 
-    def layer_update(pp_i, parts):
-        pp_rank = mpu.get_pipeline_model_parallel_rank()
-        pre_idx = 0
-        for _ in range(pp_rank):
-            pre_idx += parts[_]
-        ori_i = pre_idx + pp_i
+    def layer_update(pp_i, base_pp_i):
+        pp_i = base_pp_i + pp_i
         # ori_i = pp_n_layer * pp_rank + pp_i
+        ori_i = pp_i - 1
         qw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.q_proj.weight"), tp_size, tp_rank)
         kw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.k_proj.weight"), tp_size, tp_rank)
         vw = row_split(get_weight_from_name(f"model.layers.{ori_i}.self_attn.v_proj.weight"), tp_size, tp_rank)
         permute_w = permute_qkv_weight(torch.cat([qw, kw, vw], dim=0), (n_heads, hidden_size, tp_size, num_kv_heads))
         # model_state_dict[f"language_model.encoder.layers.{pp_i}.self_attention.query_key_value.weight"].copy_(permute_w)
-        model_state_dict[f"decoder.layers.{pp_i}.self_attention.linear_qkv.weight"].copy_(permute_w)
+        # model_state_dict[f"decoder.layers.{pp_i}.self_attention.linear_qkv.weight"].copy_(permute_w)
+        model_state_dict[f"{pp_i}.self_attention.linear_qkv.weight"].copy_(permute_w)
         # model_state_dict[f"language_model.encoder.layers.{pp_i}.self_attention.dense.weight"].copy_(column_split(
-        model_state_dict[f"decoder.layers.{pp_i}.self_attention.linear_proj.weight"].copy_(column_split(
+        # model_state_dict[f"decoder.layers.{pp_i}.self_attention.linear_proj.weight"].copy_(column_split(
+        model_state_dict[f"{pp_i}.self_attention.linear_proj.weight"].copy_(column_split(
             get_weight_from_name(f"model.layers.{ori_i}.self_attn.o_proj.weight"), tp_size, tp_rank))
 
         gate_proj = row_split(
@@ -317,25 +319,44 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
         gate_up_proj = row_split(
             get_weight_from_name(f"model.layers.{ori_i}.mlp.gate_up_proj.weight"), tp_size, tp_rank)
         if gate_up_proj is not None:
-            model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc1.weight"].copy_(gate_up_proj)
+            # model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc1.weight"].copy_(gate_up_proj)
+            model_state_dict[f"{pp_i}.mlp.linear_fc1.weight"].copy_(gate_up_proj)
         else:
             # model_state_dict[f"language_model.encoder.layers.{pp_i}.mlp.proj.weight"].copy_(torch.cat(
-            model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc1.weight"].copy_(torch.cat(
+            # model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc1.weight"].copy_(torch.cat(
+            model_state_dict[f"{pp_i}.mlp.linear_fc1.weight"].copy_(torch.cat(
                 [gate_proj, up_proj], 0).contiguous().clone())
         # model_state_dict[f"language_model.encoder.layers.{pp_i}.mlp.dense_4h_to_h.weight"].copy_(column_split(
-        model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc2.weight"].copy_(column_split(
+        # model_state_dict[f"decoder.layers.{pp_i}.mlp.linear_fc2.weight"].copy_(column_split(
+        model_state_dict[f"{pp_i}.mlp.linear_fc2.weight"].copy_(column_split(
             get_weight_from_name(f"model.layers.{ori_i}.mlp.down_proj.weight"), tp_size, tp_rank))
         # model_state_dict[f"language_model.encoder.layers.{pp_i}.input_layernorm.weight"].copy_(get_weight_from_name(
-        model_state_dict[f"decoder.layers.{pp_i}.input_layernorm.weight"].copy_(get_weight_from_name(
+        # model_state_dict[f"decoder.layers.{pp_i}.input_layernorm.weight"].copy_(get_weight_from_name(
+        model_state_dict[f"{pp_i}.input_layernorm.weight"].copy_(get_weight_from_name(
             f"model.layers.{ori_i}.input_layernorm.weight").clone())
         # model_state_dict[f"language_model.encoder.layers.{pp_i}.post_attention_layernorm.weight"].copy_(get_weight_from_name(
-        model_state_dict[f"decoder.layers.{pp_i}.pre_mlp_layernorm.weight"].copy_(get_weight_from_name(
+        # model_state_dict[f"decoder.layers.{pp_i}.pre_mlp_layernorm.weight"].copy_(get_weight_from_name(
+        model_state_dict[f"{pp_i}.pre_mlp_layernorm.weight"].copy_(get_weight_from_name(
             f"model.layers.{ori_i}.post_attention_layernorm.weight").clone())
 
-    parts = args.pp_partition_parts
-    pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
-    for pp_i in range(pp_n_layer):
-        layer_update(pp_i, parts)
+    ini_parts = args.pp_partition_parts
+    parts = copy.deepcopy(ini_parts)
+    # recompute for megatron-lm
+    for idx in range(len(parts) - 1, 0, -1):
+        parts[idx] = parts[idx] - parts[idx - 1]
+    parts.pop(0)
+    if mpu.get_pipeline_model_parallel_rank() == 0:
+        pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
+        for pp_i in range(1, pp_n_layer):
+            layer_update(pp_i, ini_parts[mpu.get_pipeline_model_parallel_rank()])
+    elif mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1:
+        pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
+        for pp_i in range(0, pp_n_layer - 2):
+            layer_update(pp_i, ini_parts[mpu.get_pipeline_model_parallel_rank()])
+    else:
+        pp_n_layer = parts[mpu.get_pipeline_model_parallel_rank()]
+        for pp_i in range(pp_n_layer):
+            layer_update(pp_i, ini_parts[mpu.get_pipeline_model_parallel_rank()])
 
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()

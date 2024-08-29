@@ -1,14 +1,28 @@
+import os
+import torch
+import torch.distributed as dist
+from torch import Tensor
 from bisect import bisect_left
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional
 
-from megatron.core import mpu
+if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
+    from llm.utils.env import dist_env
+elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+    from megatron.core import mpu as dist_env
 from megatron.training import get_args
-from megatron.core import tensor_parallel
+from megatron.core.dist_checkpointing.mapping import ShardedStateDict
+from megatron.core import InferenceParams, tensor_parallel
+from megatron.core.config_logger import has_config_logger_enabled
 from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
+from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
+from megatron.core.models.common.language_module.language_module import LanguageModule
+from megatron.core.transformer.enums import ModelType
+from megatron.core.transformer.transformer_layer import TransformerLayer
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -39,7 +53,7 @@ from .utils import (
 )
 
 
-class LlaMAModel(GPTModel):
+class LlaMAModel(LanguageModule):
     """GPT Transformer language model.
 
     Args:
@@ -75,6 +89,10 @@ class LlaMAModel(GPTModel):
         seq_len_interpolation_factor: Optional[float] = None,
     ) -> None:
         super().__init__(config=config)
+        if dist.is_initialized():
+            self.global_rank = dist.get_rank()
+        else:
+            self.global_rank = -1
 
         if has_config_logger_enabled(config):
             log_config_to_disk(config, locals(), prefix=type(self).__name__)
@@ -114,6 +132,10 @@ class LlaMAModel(GPTModel):
         # model build
         self.forward_funcs = []
         self.build()
+        if self.pre_process:
+            self.embedding = self.forward_funcs[0]
+        if self.post_process:
+            self.output_layer = self.forward_funcs[-1]
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -127,16 +149,23 @@ class LlaMAModel(GPTModel):
         for local_idx, layer in enumerate(self.part_module_list):
             layer_idx = local_idx + self._local_start
 
-            module = layer["type"](**layer["kwargs"])
+            module_type = layer['type']
+            module_kwargs = layer['kwargs']
+            if layer['name'] == "lm_head":
+                if self.post_process:
+                    module_kwargs['skip_weight_param_allocation'] = self.pre_process and self.share_embeddings_and_output_weights
+                else:
+                    continue
+            module = module_type(**module_kwargs)
             name = str(layer_idx)
             self.forward_funcs.append(module)
             self.add_module(name, module)
 
     def _partition_layers(self):
-        num_stages = mpu.get_pipeline_model_parallel_world_size()
-        stage_id = mpu.get_pipeline_model_parallel_rank()
+        num_stages = dist_env.get_pipeline_model_parallel_world_size()
+        stage_id = dist_env.get_pipeline_model_parallel_rank()
 
-        args = gets_args()
+        args = get_args()
         method = args.pp_partition_method
         method = method.lower()
 
@@ -163,22 +192,34 @@ class LlaMAModel(GPTModel):
                 start = self.parts[stage]
                 stop = self.parts[stage + 1]
                 print(f'stage={stage} layers={stop - start}')
-                for idx, layer in enumerate(self.specs[start:stop]):
-                    name = str(layer)
-                    if isinstance(layer, LayerSpec):
-                        name = layer.typename.__name__
-                    if isinstance(layer, nn.Module):
-                        name = layer.__class__.__name__
-                    else:
-                        try:
-                            name = layer.__name__
-                        except AttributeError:
-                            pass
+                for idx, layer in enumerate(self.module_list[start:stop]):
+                    name = layer['name']
                     print(f'    {idx+start:2d}: {name}')
+        args.pp_partition_parts = self.parts
         # setting according module list
         self._local_start = self.parts[stage_id]
         self._local_stop = self.parts[stage_id + 1]
         self.part_module_list = self.module_list[self._local_start:self._local_stop]
+ 
+    def set_input_tensor(self, input_tensor: Tensor) -> None:
+        """Sets input tensor to the model.
+
+        See megatron.model.transformer.set_input_tensor()
+
+        Args:
+            input_tensor (Tensor): Sets the input tensor for the model.
+        """
+        # This is usually handled in schedules.py but some inference code still
+        # gives us non-lists or None
+        if not isinstance(input_tensor, list):
+            input_tensor = [input_tensor]
+
+        assert len(input_tensor) == 1, 'input_tensor should only be length 1 for gpt/bert'
+        # self.decoder.set_input_tensor(input_tensor[0])
+        for idx in range(len(self.part_module_list)):
+            if self.part_module_list[idx]["name"] == "decoder_layer":
+                self.forward_funcs[idx].set_input_tensor(input_tensor[0])
+                break
 
     def _count_layer_params(self):
         """Count the trainable parameters in individual layers.
@@ -221,6 +262,7 @@ class LlaMAModel(GPTModel):
         )
         if hasattr(self.transformer_layer_spec, "submodules") and self.transformer_layer_spec.submodules is not None:
             transformer_layer_params["kwargs"]["submodules"] = self.transformer_layer_spec.submodules
+            transformer_layer_params['kwargs']['pre_process'] = self.pre_process
         for layer_idx in range(self.config.num_layers):
             transformer_layer_params["layer_number"] = layer_idx + 1
             module_list.append(transformer_layer_params)
@@ -290,10 +332,10 @@ class LlaMAModel(GPTModel):
             # decoder will get hidden_states from encoder.input_tensor
             decoder_input = None
 
-        if repr(self.module_list[self._local_start]) == "TransformerLayer":
+        if self.module_list[self._local_start]["name"] == "decoder_layer":
             if self.position_embedding_type == 'rope':
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                    inference_params, self.decoder, decoder_input, self.config
+                    inference_params, self.forward_funcs[0], decoder_input, self.config
                 )
                 rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
         
@@ -301,24 +343,29 @@ class LlaMAModel(GPTModel):
             if self.pre_process and idx == 0:
                 # embeddings
                 decoder_input = self.forward_funcs[idx](input_ids=decoder_input, position_ids=position_ids)
-            elif repr(self.module_list[self._local_start + idx]) == "TransformerLayer":
+                if self.position_embedding_type == 'rope':
+                    rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+                        inference_params, self.forward_funcs[idx + 1], decoder_input, self.config
+                    )
+                    rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
+            elif self.module_list[self._local_start + idx]["name"] == "decoder_layer":
                 decoder_input, context = self.forward_funcs[idx](
                     hidden_states=decoder_input,
                     attention_mask=attention_mask,
-                    context=context,
-                    context_mask=context_mask,
+                    context=None,
+                    context_mask=None,
                     rotary_pos_emb=rotary_pos_emb,
                     inference_params=inference_params,
                     packed_seq_params=packed_seq_params,
                 )
-            elif repr(self.module_list[self._local_start + idx]) == "LayerNormImpl":
+            elif self.module_list[self._local_start + idx]["name"] == "layernorm_before_head":
                 decoder_input = self.forward_funcs[idx](decoder_input)
-            elif repr(self.module_list[self._local_start + idx]) == "tensor_parallel.ColumnParallelLinear":
+            elif self.module_list[self._local_start + idx]["name"] == "lm_head":
                 # logits and loss
                 output_weight = None
                 if self.share_embeddings_and_output_weights:
                     output_weight = self.shared_embedding_or_output_weight()
-                logits, _ = self.output_layer(decoder_input, weight=output_weight)
+                logits, _ = self.forward_funcs[idx](decoder_input, weight=output_weight)
 
                 if has_config_logger_enabled(self.config):
                     payload = OrderedDict(
@@ -341,3 +388,28 @@ class LlaMAModel(GPTModel):
                     decoder_input = self.compute_language_model_loss(labels, logits)
 
         return decoder_input
+
+    def sharded_state_dict(
+        self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[Dict] = None
+    ) -> ShardedStateDict:
+        """Sharded state dict implementation for GPTModel backward-compatibility (removing extra state).
+
+        Args:
+            prefix (str): Module name prefix.
+            sharded_offsets (tuple): PP related offsets, expected to be empty at this module level.
+            metadata (Optional[Dict]): metadata controlling sharded state dict creation.
+
+        Returns:
+            ShardedStateDict: sharded state dict for the GPTModel
+        """
+        sharded_state_dict = super().sharded_state_dict(prefix, sharded_offsets, metadata)
+        output_layer_extra_state_key = f'{prefix}output_layer._extra_state'
+
+        # Old GPT checkpoints only stored the output layer weight key. So we remove the _extra_state key
+        # but check that it doesn't contain any data anyway
+        output_extra_state = sharded_state_dict.pop(output_layer_extra_state_key, None)
+        assert not (
+            output_extra_state and output_extra_state.data
+        ), f'Expected output layer extra state to be empty, got: {output_extra_state}'
+
+        return sharded_state_dict
