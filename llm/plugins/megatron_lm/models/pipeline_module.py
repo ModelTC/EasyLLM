@@ -5,10 +5,13 @@ from typing import Dict, Literal, Optional
 
 from megatron.training import get_args
 from megatron.core.transformer.enums import ModelType
+from megatron.core import parallel_state, tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.transformer.spec_utils import ModuleSpec
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.transformer.custom_layers.transformer_engine import te_checkpoint
 from megatron.core.models.common.language_module.language_module import LanguageModule
 
 if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
@@ -114,6 +117,24 @@ class PipelineParallelModule(LanguageModule):
                 self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
             )
 
+        # checkpointing
+        if (self.config.recompute_granularity == 'full' and \
+            self.config.recompute_method == 'dynamic_seqlen'
+        ):
+            args = get_args()
+            self._seq_len_to_recompute_layer = args.seq_len_to_recompute_layer
+    
+    def _get_recompute_layer_num(self, seq_len):
+        seq_len_keys = sorted(list(self._seq_len_to_recompute_layer.keys()))
+        for key in seq_len_keys:
+            if seq_len <= key:
+                layer_num = self._seq_len_to_recompute_layer[key]
+                if isinstance(layer_num, list):
+                    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+                    layer_num = layer_num[pp_rank]
+                return layer_num
+        return -1
+
     def build(self):
         for local_idx, layer in enumerate(self.part_module_list):
             layer_idx = local_idx + self._local_start
@@ -212,6 +233,89 @@ class PipelineParallelModule(LanguageModule):
             if self.part_module_list[idx]["name"] == "decoder_layer":
                 self.forward_funcs[idx].set_input_tensor(input_tensor[0])
                 break
+
+    def _checkpointed_forward(
+        self,
+        hidden_states: Tensor,
+        attention_mask: Tensor,
+        context: Tensor,
+        context_mask: Tensor,
+        rotary_pos_emb: Tensor,
+        packed_seq_params: PackedSeqParams,
+        tf_idx: int
+    ):
+        """Forward method with activation checkpointing."""
+
+        def custom(start: int, end: int):
+            def custom_forward(
+                hidden_states,
+                attention_mask,
+                context,
+                context_mask,
+                rotary_pos_emb,
+            ):
+                for index in range(start, end):
+                    # layer = self._get_layer(index)
+                    hidden_states, context = self.forward_funcs[index](
+                        hidden_states=hidden_states,
+                        attention_mask=attention_mask,
+                        context=context,
+                        context_mask=context_mask,
+                        rotary_pos_emb=rotary_pos_emb,
+                        inference_params=None,
+                        packed_seq_params=packed_seq_params,
+                    )
+                return hidden_states, context
+
+            return custom_forward
+
+        def checkpoint_handler(forward_func):
+            if self.config.fp8:
+                return te_checkpoint(
+                    forward_func,
+                    self.config.distribute_saved_activations,
+                    tensor_parallel.random.get_cuda_rng_tracker,
+                    parallel_state.get_tensor_model_parallel_group(),
+                    hidden_states,
+                    attention_mask,
+                    context,
+                    context_mask,
+                    rotary_pos_emb,
+                )
+            else:
+                return tensor_parallel.checkpoint(
+                    forward_func,
+                    self.config.distribute_saved_activations,
+                    hidden_states,
+                    attention_mask,
+                    context,
+                    context_mask,
+                    rotary_pos_emb,
+                )
+
+        if self.config.recompute_method == 'dynamic_seqlen':
+            # Checkpoint the input activation according input sequence length
+            seq_len = hidden_states.shape[0]
+            recompute_layer_num = self._get_recompute_layer_num(seq_len)
+
+            if dist_env.get_pipeline_model_parallel_rank() == 0:
+                l = tf_idx + 1
+            else:
+                l = tf_idx
+            if tf_idx < recompute_layer_num:
+                hidden_states, context = checkpoint_handler(custom(l, l + 1))
+            else:
+                hidden_states, context = custom(l, l + 1)(
+                    hidden_states,
+                    attention_mask,
+                    context,
+                    context_mask,
+                    rotary_pos_emb,
+                )
+        else:
+            raise ValueError("Invalid activation recompute method.")
+        
+        return hidden_states
 
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[Dict] = None

@@ -1,3 +1,4 @@
+import os
 from torch import Tensor
 from contextlib import nullcontext
 from typing import Literal, Optional
@@ -10,6 +11,11 @@ from megatron.core.config_logger import has_config_logger_enabled
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
+
+if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
+    from llm.utils.env import dist_env
+elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
+    from megatron.core import mpu as dist_env
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -205,15 +211,31 @@ class LlaMAModel(PipelineParallelModule):
                 else:
                     fp8_context = nullcontext()
                 with rng_context and fp8_context:
-                    decoder_input, context = self.forward_funcs[idx](
-                        hidden_states=decoder_input,
-                        attention_mask=attention_mask,
-                        context=None,
-                        context_mask=None,
-                        rotary_pos_emb=rotary_pos_emb,
-                        inference_params=inference_params,
-                        packed_seq_params=packed_seq_params,
-                    )
+                    # Forward pass.
+                    if self.config.recompute_granularity == 'full' and self.training:
+                        if dist_env.get_pipeline_model_parallel_rank() == 0:
+                            tf_idx = idx - 1
+                        else:
+                            tf_idx = idx
+                        hidden_states = self._checkpointed_forward(
+                            hidden_states=hidden_states,
+                            attention_mask=attention_mask,
+                            context=None,
+                            context_mask=None,
+                            rotary_pos_emb=rotary_pos_emb,
+                            packed_seq_params=packed_seq_params,
+                            tf_idx=tf_idx
+                        )
+                    else:
+                        decoder_input, context = self.forward_funcs[idx](
+                            hidden_states=decoder_input,
+                            attention_mask=attention_mask,
+                            context=None,
+                            context_mask=None,
+                            rotary_pos_emb=rotary_pos_emb,
+                            inference_params=inference_params,
+                            packed_seq_params=packed_seq_params,
+                        )
             elif self.module_list[self._local_start + idx]["name"] == "layernorm_before_head":
                 decoder_input = self.forward_funcs[idx](decoder_input)
             elif self.module_list[self._local_start + idx]["name"] == "lm_head":
