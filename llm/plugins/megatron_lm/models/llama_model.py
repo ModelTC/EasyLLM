@@ -1,6 +1,7 @@
 import os
 import torch
 import torch.distributed as dist
+from contextlib import nullcontext
 from torch import Tensor
 from bisect import bisect_left
 from typing import Dict, Literal, Optional
@@ -349,15 +350,24 @@ class LlaMAModel(LanguageModule):
                     )
                     rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
             elif self.module_list[self._local_start + idx]["name"] == "decoder_layer":
-                decoder_input, context = self.forward_funcs[idx](
-                    hidden_states=decoder_input,
-                    attention_mask=attention_mask,
-                    context=None,
-                    context_mask=None,
-                    rotary_pos_emb=rotary_pos_emb,
-                    inference_params=inference_params,
-                    packed_seq_params=packed_seq_params,
-                )
+                if self.config.sequence_parallel:
+                    rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
+                else:
+                    rng_context = nullcontext()
+                if self.config.fp8:
+                    pass
+                else:
+                    fp8_context = nullcontext()
+                with rng_context and fp8_context:
+                    decoder_input, context = self.forward_funcs[idx](
+                        hidden_states=decoder_input,
+                        attention_mask=attention_mask,
+                        context=None,
+                        context_mask=None,
+                        rotary_pos_emb=rotary_pos_emb,
+                        inference_params=inference_params,
+                        packed_seq_params=packed_seq_params,
+                    )
             elif self.module_list[self._local_start + idx]["name"] == "layernorm_before_head":
                 decoder_input = self.forward_funcs[idx](decoder_input)
             elif self.module_list[self._local_start + idx]["name"] == "lm_head":

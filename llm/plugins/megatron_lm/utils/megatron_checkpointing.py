@@ -292,9 +292,9 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
     if pp_rank == pp_size - 1:
         # model_state_dict["language_model.encoder.final_layernorm.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
         # model_state_dict["decoder.final_layernorm.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
-        model_state_dict[f"{n_layer + 2}.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
+        model_state_dict[f"{n_layer + 1}.weight"].copy_(get_weight_from_name("model.norm.weight").clone())
         # model_state_dict["language_model.output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
-        model_state_dict["output_layer.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
+        model_state_dict[f"{n_layer + 2}.weight"].copy_(row_split(get_weight_from_name("lm_head.weight"), tp_size, tp_rank))
 
     def layer_update(pp_i, base_pp_i):
         pp_i = base_pp_i + pp_i
