@@ -1,3 +1,6 @@
+from bisect import bisect_left
+
+
 def partition_uniform(num_items, num_parts):
     import numpy
     parts = [0] * (num_parts + 1)
