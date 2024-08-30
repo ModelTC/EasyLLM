@@ -217,8 +217,8 @@ class LlaMAModel(PipelineParallelModule):
                             tf_idx = idx - 1
                         else:
                             tf_idx = idx
-                        hidden_states = self._checkpointed_forward(
-                            hidden_states=hidden_states,
+                        decoder_input = self._checkpointed_forward(
+                            hidden_states=decoder_input,
                             attention_mask=attention_mask,
                             context=None,
                             context_mask=None,

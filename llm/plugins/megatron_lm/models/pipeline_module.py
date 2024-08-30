@@ -295,13 +295,16 @@ class PipelineParallelModule(LanguageModule):
 
         if self.config.recompute_method == 'dynamic_seqlen':
             # Checkpoint the input activation according input sequence length
-            seq_len = hidden_states.shape[0]
-            recompute_layer_num = self._get_recompute_layer_num(seq_len)
-
             if dist_env.get_pipeline_model_parallel_rank() == 0:
                 l = tf_idx + 1
             else:
                 l = tf_idx
+
+            if hidden_states == None:
+                hidden_states = self.forward_funcs[l].input_tensor
+            seq_len = hidden_states.shape[0]
+            recompute_layer_num = self._get_recompute_layer_num(seq_len)
+
             if tf_idx < recompute_layer_num:
                 hidden_states, context = checkpoint_handler(custom(l, l + 1))
             else:
