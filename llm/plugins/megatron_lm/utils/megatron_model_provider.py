@@ -47,6 +47,7 @@ except ImportError:
 
 from megatron.legacy.model.rms_norm import RMSNorm
 from llm.plugins.megatron_lm.models.llama_model import LlaMAModel
+from llm.plugins.megatron_lm.models.internvl.internvl_model import InternVLModel
 
 
 # Helper function to get module spec for MLP/MoE
@@ -206,5 +207,96 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             rotary_percent=args.rotary_percent,
             rotary_base=args.rotary_base
         )
+
+    return model
+
+
+def model_provider_vlm(pre_process=True, post_process=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
+    """Builds the model.
+
+    If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
+
+    Args:
+        pre_process (bool, optional): Set to true if you need to compute embedings. Defaults to True.
+        post_process (bool, optional): Set to true if you need to want to compute output logits/loss. Defaults to True.
+
+
+    Returns:
+        Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
+    """
+    # args = get_args()
+    # use_te = args.transformer_impl == "transformer_engine"
+
+    # print_rank_0('building GPT model ...')
+    # # Experimental loading arguments from yaml
+    # if args.yaml_cfg is not None:
+    #     config = core_transformer_config_from_yaml(args, "language_model")
+    # else:
+    #     config = core_transformer_config_from_args(args)
+
+    # if args.use_legacy_models:
+    #     model = megatron.legacy.model.GPTModel(
+    #         config,
+    #         num_tokentypes=0,
+    #         parallel_output=True,
+    #         pre_process=pre_process,
+    #         post_process=post_process,
+    #     )
+    # else:  # using core models
+    #     if args.spec is not None:
+    #         transformer_layer_spec = import_module(args.spec)
+    #     else:
+    #         if use_te:
+    #             transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+    #         else:
+    #             transformer_layer_spec = get_llama_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+
+    #     # model = GPTModel(
+    #     model = InternVLModel(
+    #         config=config,
+    #         transformer_layer_spec=transformer_layer_spec,
+    #         vocab_size=args.padded_vocab_size,
+    #         max_sequence_length=args.max_position_embeddings,
+    #         pre_process=pre_process,
+    #         post_process=post_process,
+    #         fp16_lm_cross_entropy=args.fp16_lm_cross_entropy,
+    #         parallel_output=True,
+    #         share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
+    #         position_embedding_type=args.position_embedding_type,
+    #         rotary_percent=args.rotary_percent,
+    #         rotary_base=args.rotary_base
+    #     )
+
+    args = get_args()
+    use_te = args.transformer_impl == "transformer_engine"
+    
+    language_transformer_config = core_transformer_config_from_args(args)
+    if args.spec is not None:
+        language_transformer_layer_spec = import_module(args.spec)
+    else:
+        if use_te:
+            language_transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+        else:
+            language_transformer_layer_spec = get_llama_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+
+    cfg_model = args.cfg_model
+    model = InternVLModel(
+        num_vit_layers=cfg_model['num_vit_layers'],
+
+        vision_embedding_config=cfg_model['vision_embedings_params'],
+        vision_transformer_config=cfg_model['vision_transformer_layer_params'],
+        vision_extract_feat_config=cfg_model['vision_extract_feat_params'],
+        drop_path_rate=cfg_model['drop_path_rate'],
+
+        word_embedding_config=cfg_model['word_embedings_params'],
+        fp32_residual_connection=cfg_model['fp32_residual_connection'],
+
+        language_transformer_config=language_transformer_config,
+        language_transformer_layer_spec=language_transformer_layer_spec,
+
+        vocab_size=args.padded_vocab_size,
+        parallel_output=True
+    )
+
 
     return model

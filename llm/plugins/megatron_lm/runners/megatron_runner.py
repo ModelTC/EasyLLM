@@ -38,10 +38,12 @@ from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
-from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider
+from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider, model_provider_vlm
 from llm.plugins.megatron_lm.utils.megatron_utils import forward_step, yaml2args
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
+
+from llm.plugins.megatron_lm.datas.internvl import *
 
 if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
     from llm.utils.env import dist_env
@@ -144,10 +146,22 @@ class MegatronRunner(object):
                 self.optimizer.reload_model_params()
 
     def build_model(self, model_type=ModelType.encoder_or_decoder):
-        self.model = get_model(model_provider, model_type)
+        # self.model = get_model(model_provider, model_type)
+        self.model = get_model(model_provider_vlm, model_type)
 
     def build_tokenizer(self):
         self.tokenizer = build_tokenizer(self.config['tokenizer'])
+
+        if self.config['model']['type'] == 'intern_custom':
+            if getattr(self.tokenizer, 'padded_vocab_size', None) is not None \
+               and self.tokenizer.padded_vocab_size != len(self.tokenizer):
+                vocab_size = self.tokenizer.padded_vocab_size
+            else:
+                vocab_size = len(self.tokenizer)
+
+            args = get_args()
+            args.cfg_model['word_embedings_params'].update({'vocab_size': vocab_size})
+
 
     def build_data_engine(self):
         cfg_data = self.config['data']
