@@ -367,39 +367,83 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     from megatron.training.arguments import validate_args
     from megatron.training.yaml_arguments import validate_yaml
     from megatron.training.global_vars import set_global_variables
-    cfg_model = build_model_cfg(config)
+
     args = parse_args_mg(extra_args_provider, ignore_unknown_args)
+    if config['model']['type'] == "intern_custom":
+        cfg_model = build_internvl_cfg(config)
+        args.cfg_model = cfg_model
+
+        args.num_layers = cfg_model['num_layers']
+        args.hidden_size = cfg_model['transformer_layer_params']['hidden_size']
+        args.num_attention_heads = cfg_model['transformer_layer_params']['num_attention_heads']
+        args.max_position_embeddings = cfg_model["word_embedings_params"].get("max_position_embeddings")
+        args.seq_length = config["tokenization"]["kwargs"].get("max_seq_length", 4096)
+        if args.max_position_embeddings is None or args.seq_length > args.max_position_embeddings:
+            args.max_position_embeddings = args.seq_length
+        args.micro_batch_size = config['data']['train']['micro_batch_size']
+
+        logger.info("Mapping yaml args to megatron args.")
+        args.ffn_hidden_size = cfg_model['transformer_layer_params']['intermediate_size']
+        if cfg_model['transformer_layer_params'].get("glu_activation", "silu") == "silu":
+            args.swiglu = True
+        args.use_rotary_position_embeddings = True
+        args.hidden_dropout = cfg_model['transformer_layer_params']['hidden_dropout']
+        args.attention_dropout = cfg_model['transformer_layer_params']['attention_dropout']
+        args.add_bias_linear = False
+        args.norm_epsilon = cfg_model['layer_norm_params']["kwargs"]['eps']
+        if cfg_model['layer_norm_params']['type'] == "rms_norm":
+            args.normalization = "RMSNorm"
+        if cfg_model['transformer_layer_params']['num_kv_attention_heads'] != cfg_model['transformer_layer_params']['num_attention_heads']:
+            args.group_query_attention = True
+            args.num_query_groups = cfg_model['transformer_layer_params']['num_kv_attention_heads']
+        position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
+        args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
+        args.rotary_base = position_embedding_kwargs.get('base', 10000)
+        args.use_flash_attn = cfg_model.get('use_flash_attn', True)
+        args.sequence_parallel = cfg_model.get('sequence_parallel', False)
+
+    else:
+        cfg_model = build_model_cfg(config)
+
+    # import os
+    # if os.environ['RANK'] == '0':
+    #     import pdb;pdb.set_trace()
+    # else:
+    #     import time
+    #     time.sleep(100000)
+
     args.pp_partition_method = config['model']['kwargs'].get('pp_partition_method', "uniform")
     args.pp_partition_parts = None
 
-    args.num_layers = cfg_model['num_layers']
-    args.hidden_size = cfg_model['hidden_size']
-    args.num_attention_heads = cfg_model['num_attention_heads']
-    args.max_position_embeddings = cfg_model["word_embedings_params"].get("max_position_embeddings")
-    args.seq_length = config["tokenization"]["kwargs"].get("max_seq_length", 4096)
-    if args.max_position_embeddings is None or args.seq_length > args.max_position_embeddings:
-        args.max_position_embeddings = args.seq_length
-    args.micro_batch_size = config['data']['train']['micro_batch_size']
+    # args.num_layers = cfg_model['num_layers']
+    # args.hidden_size = cfg_model['hidden_size']
+    # args.num_attention_heads = cfg_model['num_attention_heads']
+    # args.max_position_embeddings = cfg_model["word_embedings_params"].get("max_position_embeddings")
+    # args.seq_length = config["tokenization"]["kwargs"].get("max_seq_length", 4096)
+    # if args.max_position_embeddings is None or args.seq_length > args.max_position_embeddings:
+    #     args.max_position_embeddings = args.seq_length
+    # args.micro_batch_size = config['data']['train']['micro_batch_size']
 
-    logger.info("Mapping yaml args to megatron args.")
-    args.ffn_hidden_size = cfg_model['intermediate_size']
-    if cfg_model['transformer_layer_params'].get("glu_activation", "silu") == "silu":
-        args.swiglu = True
-    args.use_rotary_position_embeddings = True
-    args.hidden_dropout = cfg_model['transformer_layer_params']['hidden_dropout']
-    args.attention_dropout = cfg_model['transformer_layer_params']['attention_dropout']
-    args.add_bias_linear = False
-    args.norm_epsilon = cfg_model['layer_norm_params']["kwargs"]['eps']
-    if cfg_model['layer_norm_params']['type'] == "rms_norm":
-        args.normalization = "RMSNorm"
-    if cfg_model['num_kv_attention_heads'] != cfg_model['num_attention_heads']:
-        args.group_query_attention = True
-        args.num_query_groups = cfg_model['num_kv_attention_heads']
-    position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
-    args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
-    args.rotary_base = position_embedding_kwargs.get('base', 10000)
-    args.use_flash_attn = cfg_model.get('use_flash_attn', True)
-    args.sequence_parallel = cfg_model.get('sequence_parallel', False)
+    # logger.info("Mapping yaml args to megatron args.")
+    # args.ffn_hidden_size = cfg_model['intermediate_size']
+    # if cfg_model['transformer_layer_params'].get("glu_activation", "silu") == "silu":
+    #     args.swiglu = True
+    # args.use_rotary_position_embeddings = True
+    # args.hidden_dropout = cfg_model['transformer_layer_params']['hidden_dropout']
+    # args.attention_dropout = cfg_model['transformer_layer_params']['attention_dropout']
+    # args.add_bias_linear = False
+    # args.norm_epsilon = cfg_model['layer_norm_params']["kwargs"]['eps']
+    # if cfg_model['layer_norm_params']['type'] == "rms_norm":
+    #     args.normalization = "RMSNorm"
+    # if cfg_model['num_kv_attention_heads'] != cfg_model['num_attention_heads']:
+    #     args.group_query_attention = True
+    #     args.num_query_groups = cfg_model['num_kv_attention_heads']
+    # position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
+    # args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
+    # args.rotary_base = position_embedding_kwargs.get('base', 10000)
+    # args.use_flash_attn = cfg_model.get('use_flash_attn', True)
+    # args.sequence_parallel = cfg_model.get('sequence_parallel', False)
+
     # training args
     args.global_batch_size = config['data']['train']['global_batch_size']
     args.train_iters = config['trainer'].get('train_iters', 0)
@@ -410,10 +454,10 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     args.clip_grad = config['deepspeed']['config'].get('gradient_clipping', 1.0)
     args.bf16 = config['runtime']['bf16']
     args.lr = config['trainer']['optimizer']['kwargs']['lr']
-    args.lr_decay_style = config['trainer']['lr_scheduler']['kwargs']['decay_style']
-    args.min_lr = config['trainer']['lr_scheduler']['kwargs'].get('min_lr', 1.0e-6)
-    args.lr_warmup_iters = config['trainer']['lr_scheduler']['kwargs']['lr_warmup_iters']
-    args.lr_decay_iters = config['trainer']['lr_scheduler']['kwargs']['lr_decay_iters']
+    # args.lr_decay_style = config['trainer']['lr_scheduler']['kwargs']['decay_style']
+    # args.min_lr = config['trainer']['lr_scheduler']['kwargs'].get('min_lr', 1.0e-6)
+    # args.lr_warmup_iters = config['trainer']['lr_scheduler']['kwargs']['lr_warmup_iters']
+    # args.lr_decay_iters = config['trainer']['lr_scheduler']['kwargs']['lr_decay_iters']
     args.overlap_grad_reduce = True
     args.seed = config['runtime']['seed']
     args.ckpt_format = 'torch'
