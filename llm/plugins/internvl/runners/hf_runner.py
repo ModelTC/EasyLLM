@@ -367,7 +367,7 @@ class MLLMHFRunner(HFRunner):
         else:
             raise NotImplementedError
 
-    def save_checkpoint(self, save_cfg, global_step, start_dict=None):
+    def save_checkpoint(self, save_cfg, global_step, state_dict=None):
         if save_cfg.get('enabled', True):
             ds_config = self.config['deepspeed']['config']
             if ds_config["zero_optimization"]["stage"] == 3:

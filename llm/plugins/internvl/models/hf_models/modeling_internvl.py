@@ -177,13 +177,13 @@ class InternVLChatModel(PreTrainedModel):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        image_flags = image_flags.squeeze(-1)
+        image_flags = image_flags.view(-1)
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
 
         # if image_flags.sum() != 0:
         vit_embeds = self.extract_feature(pixel_values)
-        if len(image_flags) != pixel_values.shape[0] and self.SP_SIZE > 1:
+
+        if self.SP_SIZE > 1 and len(image_flags) != pixel_values.shape[0]:
             vit_embeds_list = [torch.zeros_like(vit_embeds) for _ in range(self.SP_SIZE)]
             dist.all_gather(vit_embeds_list, vit_embeds, group=self.SP_GROUP)
             vit_embeds = torch.cat(vit_embeds_list, dim=0)
@@ -205,7 +205,7 @@ class InternVLChatModel(PreTrainedModel):
             selected = selected[:n_token]
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds[:n_token]
 
-        if len(image_flags) != pixel_values.shape[0] and self.SP_SIZE > 1:
+        if self.SP_SIZE > 1 and len(image_flags) != pixel_values.shape[0]:
             length = input_embeds.shape[0]
             input_embeds = self.split_for_sp(input_embeds, length, 0, self.SP_RANK)
             labels = self.split_for_sp(labels, length, 1, self.SP_RANK)

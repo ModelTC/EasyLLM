@@ -234,8 +234,12 @@ class InternVisionEncoderLayer(nn.Module):
 
         self.attn = InternAttention(config)
         self.mlp = InternMLP(config)
-        self.norm1 = InternRMSNorm(self.embed_dim, eps=config.layer_norm_eps)
-        self.norm2 = InternRMSNorm(self.embed_dim, eps=config.layer_norm_eps)
+        if hasattr(config, "norm_type") and config.norm_type == "layer_norm":
+            self.norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
+            self.norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
+        else:
+            self.norm1 = InternRMSNorm(self.embed_dim, eps=config.layer_norm_eps)
+            self.norm2 = InternRMSNorm(self.embed_dim, eps=config.layer_norm_eps)
 
         self.ls1 = nn.Parameter(config.initializer_factor * torch.ones(self.embed_dim))
         self.ls2 = nn.Parameter(config.initializer_factor * torch.ones(self.embed_dim))

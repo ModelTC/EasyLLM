@@ -160,6 +160,7 @@ class InternvlToolsDataset(Dataset):
                 meta = self.get_meta(idx)
             except Exception as e:
                 print(e, "vit_num and token_num were set to -1.")
+                print(f"{idx} {self.metas[idx]}")
                 meta = dict(input_ids=-1,
                             num_patches=-1,
                             image_flags=torch.tensor([-1], dtype=torch.long))
@@ -532,7 +533,9 @@ class InternPackedDataset(Dataset):
                 idx, num_patches, llm_length = g
                 meta = self.dataset.__getitem__(idx)
                 # print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
-                # assert len(meta["input_ids"]) == llm_length, f"llm_length: {llm_length} input_ids: {len(meta['input_ids'])}"
+                if len(meta["input_ids"]) != llm_length:
+                    import pdb; pdb.set_trace()
+                assert len(meta["input_ids"]) == llm_length, f"llm_length: {llm_length} input_ids: {len(meta['input_ids'])}"
                 # assert meta["image_flags"].sum() == num_patches
                 input_ids.append(meta['input_ids'])
                 pixel_values.append(meta['pixel_values'])
