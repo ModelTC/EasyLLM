@@ -168,7 +168,7 @@ class MLLMHFRunner(HFRunner):
     def build_trainer(self):
         world_size = get_world_size()
         if self.training:
-            self.train_iters = self.config['trainer']['train_iters']
+            # self.train_iters = self.config['trainer']['train_iters']
             self.save_interval = self.config['saver'].get('save_interval', 100)
             self.build_optimzer()
             self.build_lr_scheduler()
@@ -248,6 +248,14 @@ class MLLMHFRunner(HFRunner):
                 self.config['data'][data_type]['batch_sampler']['kwargs']['sampler']['type'] = 'dist_test'
             data_loader = build_dataloader(self.config['data'][data_type], dataset, batch_collector)
             self.data_loaders[data_type] = data_loader
+        if self.training:
+            self.gradient_accumulation_steps = self.config['runtime'].get('gradient_accumulation_steps', 1)
+            self.train_epoch_size = self.data_loaders['train'].get_epoch_size()
+            epoch = self.config['trainer'].get('epoch', -1)
+            if epoch > 0:
+                self.train_iters = int((self.train_epoch_size // self.gradient_accumulation_steps + 1) * epoch)
+            else:
+                self.train_iters = self.config['trainer']['train_iters']
 
     def batch2device(self, batch):
         batch['input_ids'] = batch['input_ids'].to(device=torch.device('cuda'))
@@ -296,7 +304,6 @@ class MLLMHFRunner(HFRunner):
             self.start_iter * self.gradient_accumulation_steps,
             self.train_iters * self.gradient_accumulation_steps,
         ):
-            torch.cuda.empty_cache()
             self.cur_iter = iteration // self.gradient_accumulation_steps
             batch = self.get_batch()
             self._hooks('before_train_iter', self.cur_iter, batch)
