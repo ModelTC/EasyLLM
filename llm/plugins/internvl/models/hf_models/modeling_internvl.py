@@ -132,6 +132,12 @@ class InternVLChatModel(PreTrainedModel):
         self.SP_SIZE = get_sequence_parallel_world_size()
         self.SP_RANK = get_sequence_parallel_rank()
         self.SP_GROUP = get_sequence_parallel_group()
+        self._init_mlp()
+
+    def _init_mlp(self):
+        nn.init.constant_(self.mlp1[0].weight, 1.0)
+        nn.init.xavier_uniform_(self.mlp1[1].weight)
+        nn.init.xavier_uniform_(self.mlp1[3].weight)
 
     def wrap_backbone_lora(self, r=128, lora_alpha=256, lora_dropout=0.05):
         lora_config = LoraConfig(

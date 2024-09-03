@@ -379,18 +379,18 @@ class InternLM2Attention(nn.Module):
             scaling_type = self.config.rope_scaling['type']
             scaling_factor = self.config.rope_scaling['factor']
             if scaling_type == 'dynamic':
-                # self.rotary_emb = InternLM2DynamicNTKScalingRotaryEmbedding(
-                #     self.head_dim,
-                #     max_position_embeddings=self.max_position_embeddings,
-                #     base=self.config.rope_theta,
-                #     scaling_factor=scaling_factor,
-                # )
                 self.rotary_emb = InternLM2DynamicNTKScalingRotaryEmbedding(
                     self.head_dim,
                     max_position_embeddings=self.max_position_embeddings,
-                    base=1000000,
-                    scaling_factor=3.0
+                    base=self.config.rope_theta,
+                    scaling_factor=scaling_factor,
                 )
+                # self.rotary_emb = InternLM2DynamicNTKScalingRotaryEmbedding(
+                #     self.head_dim,
+                #     max_position_embeddings=self.max_position_embeddings,
+                #     base=1000000,
+                #     scaling_factor=3.0
+                # )
             elif scaling_type == 'linear':
                 self.rotary_emb = InternLM2LinearScalingRotaryEmbedding(
                     self.head_dim,
