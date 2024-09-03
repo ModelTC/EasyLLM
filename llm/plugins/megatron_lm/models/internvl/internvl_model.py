@@ -2,7 +2,8 @@
 import logging
 from collections import namedtuple
 from functools import partial
-from typing import List
+from typing import List, Optional
+import copy
 
 import torch
 from torch import Tensor
@@ -21,6 +22,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
+from megatron.core.models.common.language_module.language_module import LanguageModule
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -60,10 +62,11 @@ from .vision_embedding import VisionEmbedding
 from .vision_transformer import VisionTransformerLayer
 from .vision_extract_feat import VisionExtractFeat
 from .word_embedings import EmbeddingPipe
-
+from ..embeddings import RotaryEmbedding
 
 # class InternVLModel(PipelineParallelModule):
-class InternVLModel(MegatronModule):
+# class InternVLModel(MegatronModule):
+class InternVLModel(LanguageModule):
     def __init__(
         self,
         num_vit_layers: int,
@@ -80,8 +83,13 @@ class InternVLModel(MegatronModule):
         language_transformer_layer_spec: ModuleSpec,
 
         vocab_size: int,
-        parallel_output: bool,
-
+        parallel_output: bool = True,
+        language_position_embedding_type: str = 'learned_absolute',
+        rotary_percent: float = 1.0,
+        rotary_base: int = 10000,
+        seq_len_interpolation_factor: Optional[float] = None,
+        
+        share_embeddings_and_output_weights: bool = False,
         # language_max_sequence_length: int,
         # vision_embedding_layer_spec: ModuleSpec,
         # vision_transformer_layer_spec: ModuleSpec,
@@ -91,7 +99,6 @@ class InternVLModel(MegatronModule):
         # vision_projection_type: str = "mlp",
         # allow_missing_vision_projection_checkpoint: bool = False,
         # parallel_output: bool = True,
-        # language_position_embedding_type: str = 'learned_absolute',
         # language_rotary_percent: float = 1.0,
         # pre_process: bool = True,
         # post_process: bool = True,
@@ -123,11 +130,16 @@ class InternVLModel(MegatronModule):
         # self.vision_projection = None
         # self.language_model = None
 
+        language_transformer_config.variable_seq_lengths = True
+        super().__init__(config=language_transformer_config)
+
+        # post init in layer build
+        self.pre_process = False
+        self.post_process = False
+
         # This attribute is needed to check if an all-reduce is required
         # on the word embeddings inside `finalize_model_grads._allreduce_word_embedding_grads`.
-        # self.share_embeddings_and_output_weights = False
-
-        super().__init__(config=language_transformer_config)
+        self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
 
         self.num_vit_layers = num_vit_layers
 
@@ -145,8 +157,19 @@ class InternVLModel(MegatronModule):
         self.vocab_size = vocab_size
         self.parallel_output = parallel_output
 
-        # self.language_max_sequence_length = language_max_sequence_length
-        # self.language_position_embedding_type = self.language_position_embedding_type
+        self.language_position_embedding_type = language_position_embedding_type
+        # These 2 attributes are needed for TensorRT-LLM export.
+        # self.max_position_embeddings = language_max_sequence_length
+        self.rotary_percent = rotary_percent
+        if self.language_position_embedding_type == 'rope':
+            self.rotary_pos_emb = RotaryEmbedding(
+                kv_channels=self.config.kv_channels,
+                rotary_percent=rotary_percent,
+                rotary_interleaved=self.config.rotary_interleaved,
+                seq_len_interpolation_factor=seq_len_interpolation_factor,
+                rotary_base=rotary_base,
+                use_cpu_initialization=self.config.use_cpu_initialization,
+            )
 
         # partition
         self.module_list = self.build_module_list()
@@ -154,6 +177,9 @@ class InternVLModel(MegatronModule):
         self._partition_layers()
         self.forward_funcs = []
         self.build()
+
+        if self.pre_process or self.post_process:
+            self.setup_embeddings_and_output_layer()
 
     def build_module_list(self):
         module_list = list()
@@ -175,9 +201,10 @@ class InternVLModel(MegatronModule):
         )
         dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_vit_layers)]
         for vision_layer_idx in range(num_vit_layers):
-            vision_transformer_layer_param['kwargs'].update({'vision_layer_number': vision_layer_idx + 1})
-            vision_transformer_layer_param['kwargs'].update({'drop_path_rate': dpr[vision_layer_idx]})
-            module_list.append(vision_transformer_layer_param)
+            single_layer_param = copy.deepcopy(vision_transformer_layer_param)
+            single_layer_param['kwargs'].update({'vision_layer_number': vision_layer_idx})
+            single_layer_param['kwargs'].update({'drop_path_rate': dpr[vision_layer_idx]})
+            module_list.append(single_layer_param)
 
         # vision extract feat
         vision_extract_feat_param = dict(
@@ -265,11 +292,17 @@ class InternVLModel(MegatronModule):
         model's forward_step_func won't have it. This function is thus
         used by internal code to bypass the input provided by the
         forward_step_func"""
-        self.input_tensor = input_tensor
+        # This is usually handled in schedules.py but some inference code still
+        # gives us non-lists or None
+        if not isinstance(input_tensor, list):
+            input_tensor = [input_tensor]
+        assert len(input_tensor) == 1, 'input_tensor should only be length 1 for vlm'
+
+        self.input_tensor = input_tensor[0]
 
     def forward(
         self,
-        images: torch.Tensor,
+        pixel_values: torch.Tensor,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor,
         attention_mask: torch.Tensor,
@@ -301,23 +334,32 @@ class InternVLModel(MegatronModule):
         for idx in range(len(self.forward_funcs)):
             module_name = self.module_list[self._local_start + idx]["name"]
 
+            # if torch.distributed.get_rank() == 0:
+            #     import pdb;pdb.set_trace()
+            # if self._local_start + idx == 0:
+            #     print(f"rank:{torch.distributed.get_rank()}, idx:{idx}, "
+            #       f"module_name:{module_name}, hidden_states:{pixel_values.shape}")
+            # else:
+            #     print(f"rank:{torch.distributed.get_rank()}, idx:{idx}, "
+            #         f"module_name:{module_name}, hidden_states:{hidden_states.shape}")
+
             if module_name == "vision_embedding":
-                hidden_states = self.forward_funcs[idx](images)
+                hidden_states = self.forward_funcs[idx](pixel_values)
 
             elif module_name == "vision_transformer_layer":
                 hidden_states = self.forward_funcs[idx](hidden_states)
 
-            elif module_name == "vision_feat_extract":
+            elif module_name == "vision_extract_feat":
                 hidden_states = self.forward_funcs[idx](hidden_states)
 
             elif module_name == "word_embedding":
                 vit_embedding = hidden_states
-                hidden_states = self.forward_funcs[idx](input_ids, position_ids, vit_embedding)
+                hidden_states = self.forward_funcs[idx](vit_embedding, input_ids, position_ids, image_flags)
 
             elif module_name == "language_transformer_layer":
-                if self.position_embedding_type == 'rope' and rotary_pos_emb == None:
+                if self.language_position_embedding_type == 'rope':
                     rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                        inference_params, self.decoder, hidden_states, self.config
+                        inference_params, self.forward_funcs[idx], hidden_states, self.config
                     )
                     rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
 
@@ -334,10 +376,10 @@ class InternVLModel(MegatronModule):
 
             elif module_name == "lm_head":
                 # logits and loss
-                output_weight = None
-                if self.share_embeddings_and_output_weights:
-                    output_weight = self.shared_embedding_or_output_weight()
-                logits, _ = self.forward_funcs[idx](hidden_states, weight=output_weight)
+                # output_weight = None
+                # if self.share_embeddings_and_output_weights:
+                #     output_weight = self.shared_embedding_or_output_weight()
+                logits, _ = self.forward_funcs[idx](hidden_states, weight=None)
 
                 if labels is None:
                     # [s b h] => [b s h]
@@ -348,6 +390,62 @@ class InternVLModel(MegatronModule):
 
         return hidden_states
 
+    def _count_layer_params(self):
+        """Count the trainable parameters in individual layers.
+
+        This routine will only build one layer at a time.
+
+        Returns:
+            A list of the number of parameters in each layer.
+        """
+        param_counts = [0] * len(self.module_list)
+        for idx, layer in enumerate(self.module_list):
+            module_type = layer["type"]
+            kwargs = layer["kwargs"]
+            l = module_type(**kwargs)
+            params = filter(lambda p: p.requires_grad, l.parameters())
+            param_counts[idx] = sum(p.numel() for p in params)
+        return param_counts
+        
+    def _partition_balanced(self, weights, num_parts):
+        """
+        use dynamic programming solve `The Linear Partition Problem`.
+        see https://www8.cs.umu.se/kurser/TDBAfl/VT06/algorithms/BOOK/BOOK2/NODE45.HTM
+        """
+        import numpy as np
+        n = len(weights)
+        m = num_parts
+
+        if n <= m:
+            return partition_uniform(n, m)
+
+        dp_max = np.full((n + 1, m + 1), np.inf)
+        dp_min = np.full((n + 1, m + 1), np.inf)
+        dp_cost = np.full((n + 1, m + 1), np.inf)
+        position = np.zeros((n + 1, m + 1), dtype=int)
+        prefix_sum = np.zeros((n + 1))
+        prefix_sum[1:] = np.cumsum(weights)
+
+        dp_max[0, 0] = 0
+        dp_cost[0, 0] = 0
+        for i in range(1, n + 1):
+            for j in range(1, min(i, m) + 1):
+                for k in range(i):
+                    max_sum = max(dp_max[k, j - 1], prefix_sum[i] - prefix_sum[k])
+                    min_sum = min(dp_min[k, j - 1], prefix_sum[i] - prefix_sum[k])
+                    cost = max_sum - min_sum
+                    if dp_cost[i, j] >= cost:
+                        dp_cost[i, j] = cost
+                        dp_max[i, j] = max_sum
+                        dp_min[i, j] = min_sum
+                        position[i, j] = k
+
+        parts = [n]
+        for i in reversed(range(1, m + 1)):
+            parts.append(position[parts[-1], i])
+        parts.reverse()
+
+        return parts
 
     def _partition_layers(self):
         num_stages = dist_env.get_pipeline_model_parallel_world_size()
@@ -362,7 +460,7 @@ class InternVLModel(MegatronModule):
             self.parts = partition_uniform(num_items=num_layers, num_parts=num_stages)
         elif method == "parameters":
             param_counts = self._count_layer_params()
-            self.parts = partition_balanced(weights=param_counts, num_parts=num_stages)
+            self.parts = self._partition_balanced(weights=param_counts, num_parts=num_stages)
         elif "manual" in method:
             parts = method.split("manual:")[1].split(',')
             self.parts = [int(item) for item in parts]
@@ -389,7 +487,6 @@ class InternVLModel(MegatronModule):
         self._local_stop = self.parts[stage_id + 1]
         self.part_module_list = self.module_list[self._local_start:self._local_stop]
 
-
     def build(self):
         for local_idx, layer in enumerate(self.part_module_list):
             layer_idx = local_idx + self._local_start
@@ -405,3 +502,11 @@ class InternVLModel(MegatronModule):
             name = str(layer_idx)
             self.forward_funcs.append(module)
             self.add_module(name, module)
+
+            if layer['name'] == "word_embedding":
+                self.pre_process = True
+                self.embedding = module
+
+            if layer['name'] == "lm_head":
+                self.post_process = True
+                self.output_layer = module

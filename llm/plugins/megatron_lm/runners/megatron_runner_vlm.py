@@ -38,12 +38,22 @@ from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
-from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider, model_provider_vlm
-from llm.plugins.megatron_lm.utils.megatron_utils import forward_step, yaml2args
+from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider_vlm
+from llm.plugins.megatron_lm.utils.megatron_utils import forward_step_vlm, yaml2args
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
 
-from llm.plugins.megatron_lm.datas.internvl import *
+from llm.plugins.megatron_lm.datas.internvl.data_utils import (
+    IMG_CONTEXT_TOKEN,
+    IMG_START_TOKEN,
+    IMG_END_TOKEN,
+    BOX_START_TOKEN,
+    BOX_END_TOKEN,
+    REF_START_TOKEN,
+    REF_END_TOKEN,
+    QUAD_START_TOKEN,
+    QUAD_END_TOKEN
+)
 
 if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
     from llm.utils.env import dist_env
@@ -53,6 +63,8 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
 
 _TRAIN_START_TIME = time.time()
 
+def get_ranks(pp_ranks):
+    return [3, 7]
 
 class MegatronRunner(object):
     def __init__(self, args, cfg=None, training=True, base_type='train'):
@@ -104,7 +116,8 @@ class MegatronRunner(object):
         initialize_megatron(
             extra_args_provider=extra_args_provider,
             args_defaults=args_defaults,
-            get_embedding_ranks=get_embedding_ranks,
+            # get_embedding_ranks=get_embedding_ranks,
+            get_embedding_ranks=get_ranks,
             get_position_embedding_ranks=get_position_embedding_ranks,
             ignore_unknown_args=True
         )
@@ -152,16 +165,26 @@ class MegatronRunner(object):
     def build_tokenizer(self):
         self.tokenizer = build_tokenizer(self.config['tokenizer'])
 
+        self.tokenizer.tokenizer_path = self.config["tokenizer"]["kwargs"]["tokenizer_name_or_path"]
+        self.tokenizer.model_max_length = self.config["tokenization"]["kwargs"].get("max_seq_length", 4096)
+
+        token_list = [IMG_START_TOKEN, IMG_END_TOKEN, IMG_CONTEXT_TOKEN,
+                      QUAD_START_TOKEN, QUAD_END_TOKEN, REF_START_TOKEN,
+                      REF_END_TOKEN, BOX_START_TOKEN, BOX_END_TOKEN]
+        num_new_tokens = self.tokenizer.add_tokens(token_list, special_tokens=True)  # noqa
+
         if self.config['model']['type'] == 'intern_custom':
             if getattr(self.tokenizer, 'padded_vocab_size', None) is not None \
                and self.tokenizer.padded_vocab_size != len(self.tokenizer):
                 vocab_size = self.tokenizer.padded_vocab_size
             else:
                 vocab_size = len(self.tokenizer)
-
             args = get_args()
             args.cfg_model['word_embedings_params'].update({'vocab_size': vocab_size})
-
+            # setting img_context_token_id
+            img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
+            # self.config["model"]["kwargs"]["img_context_token_id"] = img_context_token_id
+            args.cfg_model['word_embedings_params'].update({'img_context_token_id': img_context_token_id})
 
     def build_data_engine(self):
         cfg_data = self.config['data']
@@ -240,7 +263,7 @@ class MegatronRunner(object):
         # Forward pass.
         forward_backward_func = get_forward_backward_func()
         losses_reduced = forward_backward_func(
-            forward_step_func=forward_step,
+            forward_step_func=forward_step_vlm,
             data_iterator=self.data_iterators['train'],
             model=self.model,
             num_microbatches=self.num_microbatches_calculator.get(),  # get_num_microbatches(),
@@ -348,6 +371,7 @@ class MegatronRunner(object):
         config.finalize_model_grads_func = finalize_model_grads
         # TODO: resume training
         for iteration in range(self.start_iteration, args.train_iters + 1):
+            logger.info('start iteration {iteration}')
             self.num_microbatches_calculator.update(self.consumed_train_samples, True)
             args.curr_iteration = iteration
             loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = self.forward_step()

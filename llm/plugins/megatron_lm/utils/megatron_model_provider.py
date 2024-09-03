@@ -295,7 +295,12 @@ def model_provider_vlm(pre_process=True, post_process=True) -> Union[GPTModel, m
         language_transformer_layer_spec=language_transformer_layer_spec,
 
         vocab_size=args.padded_vocab_size,
-        parallel_output=True
+        parallel_output=True,
+        language_position_embedding_type=args.position_embedding_type,
+        rotary_percent=args.rotary_percent,
+        rotary_base=args.rotary_base,
+
+        share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
     )
 
 

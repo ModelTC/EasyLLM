@@ -276,7 +276,7 @@ class VisionTransformerLayer(MegatronModule):
         self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
         assert isinstance(self.num_vit_layers, int), "self.num_vit_layers must be int"
 
-    def forward(self, hidden_states):
+    def forward(self, ori_hidden_states):
         # if len(inputs) == 4:
         #     ori_hidden_states, input_ids, position_ids, image_flags = inputs
         # elif len(inputs) == 5:
@@ -290,11 +290,12 @@ class VisionTransformerLayer(MegatronModule):
         #     fake_loss += (self.ls1.data * 0).sum()
         #     return (fake_loss, *inputs[1:])
         # ori_hidden_states, input_ids, position_ids, image_flags = inputs
-        # if len(ori_hidden_states.shape) == 4:
-        #     hidden_states = ori_hidden_states[-1]
-        # else:
-        #     hidden_states = ori_hidden_states
+        if len(ori_hidden_states.shape) == 4:
+            hidden_states = ori_hidden_states[-1]
+        else:
+            hidden_states = ori_hidden_states
 
+        # print(f'hidden_states: {hidden_states.shape}')
         # hidden_states = hidden_states + self.drop_path1(self.attn(self.norm1(hidden_states=hidden_states,head_mask=attention_mask)) * self.ls1)
         hidden_states = hidden_states + self.drop_path1(self.attn(self.norm1(hidden_states)) * self.ls1)
 
@@ -307,6 +308,11 @@ class VisionTransformerLayer(MegatronModule):
             ori_hidden_states = torch.cat([ori_hidden_states, hidden_states.unsqueeze(0)])
         else:
             ori_hidden_states = hidden_states
+
+        # print(f'ori_hidden_states: {ori_hidden_states.shape}')
+        # print(f"vision_layer_number:{self.vision_layer_number},"
+        #       f"num_vit_layers:{self.num_vit_layers},"
+        #       f"vit_select_layer:{self.vit_select_layer}")
 
         # if len(inputs) == 4:
         #     return ori_hidden_states, input_ids, position_ids, image_flags

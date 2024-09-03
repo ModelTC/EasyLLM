@@ -16,6 +16,7 @@ from llm.data.nlp_dataset import IGNORE_INDEX
 from megatron.core.models.gpt import GPTModel
 from megatron.core.utils import StragglerDetector
 from llm.utils.general.log_helper import default_logger as logger
+from megatron.core import tensor_parallel
 
 stimer = StragglerDetector()
 
@@ -110,6 +111,60 @@ def forward_step(data_iterator, model: GPTModel):
 
     return output_tensor, partial(loss_func, loss_mask, labels)
 
+def get_batch_vlm(data_iterator):
+    """Generate a batch.
+
+    Args:
+        data_iterator: Iterable dataset.
+
+    Returns:
+        sample: A data sample with images, tokens, etc.
+    """
+    # Broadcast data.
+    if data_iterator is not None:
+        data = next(data_iterator)
+    else:
+        data = None
+
+    data_i = tensor_parallel.broadcast_data(["input_ids", "position_ids", "labels", "image_flags"], data, torch.int64)
+    data_f = tensor_parallel.broadcast_data(["pixel_values"], data, torch.float32)
+    data_b = tensor_parallel.broadcast_data(["attention_mask", "loss_mask"], data, torch.bool)
+
+    input_ids = data_i["input_ids"].long()
+    position_ids = data_i["position_ids"].long()
+    labels = data_i["labels"].long()
+    image_flags = data_i['image_flags'].long()
+
+    pixel_values = data_f["pixel_values"].float()
+    
+    attention_mask = data_b["attention_mask"].bool()
+    loss_mask = data_b["loss_mask"].bool()
+
+    return input_ids, position_ids, labels, image_flags, pixel_values, attention_mask, loss_mask
+
+
+def forward_step_vlm(data_iterator, model):
+    """Forward training step.
+
+    Args:
+        data_iterator : Input data iterator
+        model (GPTModel): The GPT Model
+    """
+    timers = get_timers()
+
+    # Get the batch.
+    timers('batch-generator', log_level=2).start()
+    global stimer
+    with stimer(bdata=True):
+        input_ids, position_ids, labels, image_flags, pixel_values, attention_mask, loss_mask = get_batch_vlm(
+            data_iterator)
+    timers('batch-generator').stop()
+
+    with stimer:
+        output_tensor = model(pixel_values, input_ids, position_ids, 
+                              attention_mask, image_flags, labels)
+
+    return output_tensor, partial(loss_func, loss_mask, labels)
 
 def build_model_cfg(config):
     from llm.models.mg_models.llama.llama import _LLAMA_MODELS
@@ -197,13 +252,6 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
 
     else:
         cfg_model = build_model_cfg(config)
-
-    # import os
-    # if os.environ['RANK'] == '0':
-    #     import pdb;pdb.set_trace()
-    # else:
-    #     import time
-    #     time.sleep(100000)
 
     args.pp_partition_method = config['model']['kwargs'].get('pp_partition_method', "uniform")
     args.pp_partition_parts = None

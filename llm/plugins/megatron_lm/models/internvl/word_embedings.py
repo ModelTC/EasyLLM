@@ -1,6 +1,6 @@
 import torch
 
-from llm.utils.env import dist_env
+# from llm.utils.env import dist_env
 from llm.utils.general.log_helper import default_logger as logger
 
 from llm.models.mg_models.base_modules.modules.enums import PositionEmbeddingType
@@ -8,6 +8,7 @@ from llm.models.mg_models.base_modules.modules.enums import PositionEmbeddingTyp
 # from llm.models.mg_models.base_modules.layers import VocabParallelEmbedding
 from llm.models.mg_models.base_modules.utils import get_initializer_from_cfg, get_torch_dtype, get_position_embedding_type
 
+from megatron.core import tensor_parallel
 from .meg_module import MegatronModule
 from .vocab_parallel_emb import VocabParallelEmbedding
 
@@ -164,16 +165,16 @@ class Embedding(MegatronModule):
 
 class EmbeddingPipe(Embedding):
 
-    def forward(self, inputs, **kwargs):
+    def forward(self, vit_embeds, input_ids, position_ids, image_flags):
 
         # if len(inputs) == 4:
         #     vit_embeds, input_ids, position_ids, image_flags = inputs
         # elif len(inputs) == 5:
         #     vit_embeds, input_ids, position_ids, image_flags, cu_seqlens = inputs
-        if len(inputs) == 6:
-            vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels = inputs
-        elif len(inputs) == 7:
-            vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels, cu_seqlens = inputs
+        # if len(inputs) == 6:
+        #     vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels = inputs
+        # elif len(inputs) == 7:
+        #     vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels, cu_seqlens = inputs
 
         input_embeds = super().forward(input_ids,
                                        position_ids)
@@ -210,7 +211,7 @@ class EmbeddingPipe(Embedding):
 
         if self.sequence_parallel:
             input_embeds = input_embeds.transpose(0, 1).contiguous()
-            input_embeds = dist_env.scatter_to_sequence_parallel_region(input_embeds)
+            input_embeds = tensor_parallel.scatter_to_sequence_parallel_region(input_embeds)
             input_embeds = input_embeds.transpose(0, 1).contiguous()
 
         if self.fp32_residual_connection:
@@ -222,10 +223,11 @@ class EmbeddingPipe(Embedding):
         #     return input_embeds, cu_seqlens, position_ids
         # elif len(inputs) == 4:
         #     return input_embeds
-        if len(inputs) == 6:
-            return input_embeds, attention_mask, labels
-        elif len(inputs) == 7:
-            return input_embeds, cu_seqlens, position_ids, attention_mask, labels
+        # if len(inputs) == 6:
+        #     return input_embeds, attention_mask, labels
+        # elif len(inputs) == 7:
+        #     return input_embeds, cu_seqlens, position_ids, attention_mask, labels
+        return input_embeds
 
     @property
     def word_embeddings_weight(self):

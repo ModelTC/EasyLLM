@@ -41,6 +41,7 @@ class InternvlCollector(BatchAlignCollector):
             if "cu_seqlens" in feat:
                 feat['cu_seqlens'][-1] = feat['position_ids'].size(0)
             feat['attention_mask'] = feat['input_ids'].ne(pad_id)
+            feat['loss_mask'] = feat['attention_mask'].clone()
 
         # Special handling for labels.
         # Ensure that tensor is created with the correct type

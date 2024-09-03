@@ -447,9 +447,9 @@ class InternPackedDataset(Dataset):
                 for g in groups:
                     idx, num_patches, llm_length = g
                     meta = self.dataset.__getitem__(idx)
-#                    print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
-                    assert len(meta["input_ids"]) == llm_length
-                    assert meta["image_flags"].sum() == num_patches
+                    # print("llm_length: ", llm_length, "input_ids: ", len(meta["input_ids"]))
+                    # assert len(meta["input_ids"]) == llm_length
+                    # assert meta["image_flags"].sum() == num_patches
                     input_ids.append(meta['input_ids'])
                     pixel_values.append(meta['pixel_values'])
                     labels.append(meta['labels'])

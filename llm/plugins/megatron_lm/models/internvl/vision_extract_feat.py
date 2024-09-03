@@ -101,7 +101,7 @@ class VisionExtractFeat(MegatronModule):
         #     for param in self.mlp1_norm.parameters():
         #         fake_loss += (param * 0).sum()
         #     return (fake_loss, *inputs[1:])
-
+        # print(f'feat_extract hidden_states:{hidden_states.shape}')
         if self.sequence_parallel:
             seq_len_base = (self.image_size // self.patch_size) ** 2
             hidden_states = hidden_states.transpose(0, 2).contiguous()
@@ -129,4 +129,6 @@ class VisionExtractFeat(MegatronModule):
         #     return vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels
         # elif len(inputs) == 7:
         #     return vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels, cu_seqlens
+        
+        # print(f'vit_embeds:{vit_embeds.shape}')
         return vit_embeds
