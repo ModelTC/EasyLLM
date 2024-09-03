@@ -135,9 +135,9 @@ class InternVLChatModel(PreTrainedModel):
         self._init_mlp()
 
     def _init_mlp(self):
-        nn.init.constant_(self.mlp1[0].weight, 1.0)
-        nn.init.xavier_uniform_(self.mlp1[1].weight)
-        nn.init.xavier_uniform_(self.mlp1[3].weight)
+        self.mlp1[0].reset_parameters()
+        self.mlp1[1].reset_parameters()
+        self.mlp1[3].reset_parameters()
 
     def wrap_backbone_lora(self, r=128, lora_alpha=256, lora_dropout=0.05):
         lora_config = LoraConfig(
