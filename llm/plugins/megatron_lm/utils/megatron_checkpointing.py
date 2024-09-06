@@ -278,7 +278,10 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, cfg_loader, load_arg=
     get_weight_from_name = partial(get_weight_from, state_dict)
 
     n_layer, n_heads, hidden_size = args.num_layers, args.num_attention_heads, args.hidden_size
-    num_kv_heads = args.num_query_groups  # n_heads
+    if args.group_query_attention:
+        num_kv_heads = args.num_query_groups  # n_heads
+    else:
+        num_kv_heads = args.num_attention_heads 
     pp_rank, pp_size = mpu.get_pipeline_model_parallel_rank(), mpu.get_pipeline_model_parallel_world_size()
     tp_size, tp_rank = mpu.get_tensor_model_parallel_world_size(), mpu.get_tensor_model_parallel_rank()
     pp_n_layer = n_layer // pp_size

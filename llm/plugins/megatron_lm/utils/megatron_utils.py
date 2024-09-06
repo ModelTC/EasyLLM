@@ -131,7 +131,7 @@ def build_model_cfg(config):
     if model_type != "llama_custom":
         cfg_item = _LLAMA_MODELS[model_type]
         check_keys_mapping(cfg_item, cfg_model)
-        cfg_model.update(cfg_item)
+        cfg_model["kwargs"].update(cfg_item)
     cfg_model = update_model_cfg(cfg_model['kwargs'])
     return cfg_model
 
@@ -170,6 +170,7 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
         args.group_query_attention = True
         args.num_query_groups = cfg_model['num_kv_attention_heads']
     position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
+    position_embedding_kwargs = {} if position_embedding_kwargs is None else position_embedding_kwargs
     args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
     args.rotary_base = position_embedding_kwargs.get('base', 10000)
     args.use_flash_attn = cfg_model.get('use_flash_attn', True)
