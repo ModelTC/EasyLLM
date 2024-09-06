@@ -16,11 +16,11 @@ from llm.data.nlp_dataset import IGNORE_INDEX
 from megatron.core.models.gpt import GPTModel
 from megatron.core.utils import StragglerDetector
 from llm.utils.general.log_helper import default_logger as logger
-from megatron.core import tensor_parallel
+from megatron.core import tensor_parallel, parallel_state
 from megatron.core.packed_seq_params import PackedSeqParams
 
 stimer = StragglerDetector()
-
+import time
 
 def get_batch(data_iterator):
     """Generate a batch."""
@@ -127,15 +127,19 @@ def get_batch_vlm(data_iterator):
     else:
         data = None
 
-    data_i = tensor_parallel.broadcast_data(["input_ids", "position_ids", "labels", "image_flags", "cu_seqlens"], data, torch.int64)
+    data_i = tensor_parallel.broadcast_data(["input_ids", "labels", "image_flags"], data, torch.int64)
     data_f = tensor_parallel.broadcast_data(["pixel_values"], data, torch.float32)
     data_b = tensor_parallel.broadcast_data(["attention_mask", "loss_mask"], data, torch.bool)
 
     input_ids = data_i["input_ids"].long()
-    position_ids = data_i["position_ids"].long()
+    # position_ids = data_i["position_ids"].long()
     labels = data_i["labels"].long()
     image_flags = data_i['image_flags'].long()
-    cu_seqlens = data_i['cu_seqlens'].int()
+    # cu_seqlens = data_i['cu_seqlens'].int()
+
+    # data_i = tensor_parallel.broadcast_data(["cu_seqlens"], data, torch.int64)
+    position_ids = None
+    cu_seqlens = None
 
     pixel_values = data_f["pixel_values"].float()
     
@@ -165,16 +169,28 @@ def forward_step_vlm(data_iterator, model):
     timers('batch-generator').stop()
 
     with stimer:
-        packed_seq_params = PackedSeqParams(
-            cu_seqlens_q=cu_seqlens[0],
-            cu_seqlens_kv=cu_seqlens[0],
-            qkv_format='thd',
-            # max_seqlen_q=cu_seqlens[0][-1],
-            # max_seqlen_kv=cu_seqlens[0][-1],
-        )
+        if cu_seqlens:
+            packed_seq_params = PackedSeqParams(
+                cu_seqlens_q=cu_seqlens[0],
+                cu_seqlens_kv=cu_seqlens[0],
+                qkv_format='thd',
+                # max_seqlen_q=cu_seqlens[0][-1],
+                # max_seqlen_kv=cu_seqlens[0][-1],
+            )
+        else:
+            packed_seq_params=None
+
+
+        # torch.cuda.synchronize()
+        # start_time = time.time()
+        # if torch.distributed.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
         output_tensor = model(pixel_values, input_ids, position_ids, 
                               attention_mask, image_flags, labels,
                               packed_seq_params=packed_seq_params)
+        # torch.cuda.synchronize()
+        # end_time = time.time()
+        # print(f'rank:{torch.distributed.get_rank()}, pp_rank:{parallel_state.get_pipeline_model_parallel_rank()}, duration:{end_time - start_time} s')
 
     return output_tensor, partial(loss_func, loss_mask, labels)
 

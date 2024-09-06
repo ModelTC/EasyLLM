@@ -276,10 +276,10 @@ class VisionTransformerLayer(MegatronModule):
         self.vit_select_layer = vit_select_layer
         self.ls1 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
         self.ls2 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
-        # self.drop_path1 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
-        # self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
-        self.drop_path1 = nn.Identity()
-        self.drop_path2 = nn.Identity()
+        self.drop_path1 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        # self.drop_path1 = nn.Identity()
+        # self.drop_path2 = nn.Identity()
         assert isinstance(self.num_vit_layers, int), "self.num_vit_layers must be int"
 
     def forward(self, ori_hidden_states):

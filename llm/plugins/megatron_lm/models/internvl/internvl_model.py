@@ -134,7 +134,7 @@ class InternVLModel(LanguageModule):
 
         language_transformer_config.variable_seq_lengths = True
         # language_transformer_config.bias_dropout_fusion = False # DEBUG
-        # language_transformer_config.deallocate_pipeline_outputs = False
+        language_transformer_config.deallocate_pipeline_outputs = False
         # language_transformer_config.apply_rope_fusion = False # DEBUG
         super().__init__(config=language_transformer_config)
 
@@ -399,8 +399,8 @@ class InternVLModel(LanguageModule):
                 #     torch.save(hidden_states, 'data/rank0_vit_embed.pt')
 
             elif isinstance(func, VisionTransformerLayer):
-                # hidden_states = func(hidden_states)
-                hidden_states = custom_forward(func, hidden_states)
+                hidden_states = func(hidden_states)
+                # hidden_states = custom_forward(func, hidden_states)
                 # if torch.distributed.get_rank() == 0:
                 #     torch.save(hidden_states, f'data/rank0_vit_transformer_{vit_idx}.pt')
                 #     vit_idx += 1
@@ -433,14 +433,14 @@ class InternVLModel(LanguageModule):
                 # if torch.distributed.get_rank() == 0:
                 #     torch.save(hidden_states, f'data/llm_transformer_{llm_idx}.pt')
                 #     llm_idx += 1
-                llm_idx = self.module_list[self._local_start + idx]['kwargs']["layer_number"]
-                torch.save(hidden_states, f'data/rank{rank}_llm_transformer_{llm_idx}.pt')
+                # llm_idx = self.module_list[self._local_start + idx]['kwargs']["layer_number"]
+                # torch.save(hidden_states, f'data/rank{rank}_llm_transformer_{llm_idx}.pt')
 
 
             elif module_name == "final_layernorm":
                 hidden_states = func(hidden_states)
-                if torch.distributed.get_rank() == 7:
-                    torch.save(hidden_states, 'data/final_layernorm.pt')
+                # if torch.distributed.get_rank() == 7:
+                #     torch.save(hidden_states, 'data/final_layernorm.pt')
 
             elif module_name == "lm_head":
                 # logits and loss
@@ -449,8 +449,8 @@ class InternVLModel(LanguageModule):
                 #     output_weight = self.shared_embedding_or_output_weight()
                 logits, _ = self.forward_funcs[idx](hidden_states, weight=None)
 
-                if torch.distributed.get_rank() == 7:
-                    torch.save(logits, 'data/logits.pt')
+                # if torch.distributed.get_rank() == 7:
+                #     torch.save(logits, 'data/logits.pt')
                     # import pdb;pdb.set_trace()
 
                 if labels is None:
@@ -458,8 +458,8 @@ class InternVLModel(LanguageModule):
                     return logits.transpose(0, 1).contiguous()
 
                 loss = self.compute_language_model_loss(labels, logits)
-                if torch.distributed.get_rank() == 7:
-                    torch.save(logits, 'data/loss.pt')
+                # if torch.distributed.get_rank() == 7:
+                #     torch.save(logits, 'data/loss.pt')
                 return loss
 
         return hidden_states
@@ -561,6 +561,8 @@ class InternVLModel(LanguageModule):
         self._local_stop = self.parts[stage_id + 1]
         self.part_module_list = self.module_list[self._local_start:self._local_stop]
         print(f'rank:{torch.distributed.get_rank()}, self.parts:{self.parts}')
+        # if torch.distributed.get_rank() == 0:
+        #     import pdb;pdb.set_trace()
 
     def build(self):
         for local_idx, layer in enumerate(self.part_module_list):

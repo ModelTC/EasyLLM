@@ -68,8 +68,9 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
 
 _TRAIN_START_TIME = time.time()
 
-# def get_ranks(pp_ranks):
-#     return [0, 7]
+def get_ranks(pp_ranks):
+    return [pp_ranks[-2], pp_ranks[-1]]
+    # return [0, 7]
 
 class MegatronRunner(object):
     def __init__(self, args, cfg=None, training=True, base_type='train'):
@@ -121,8 +122,8 @@ class MegatronRunner(object):
         initialize_megatron(
             extra_args_provider=extra_args_provider,
             args_defaults=args_defaults,
-            get_embedding_ranks=get_embedding_ranks,
-            # get_embedding_ranks=get_ranks,
+            # get_embedding_ranks=get_embedding_ranks,
+            get_embedding_ranks=get_ranks,
             get_position_embedding_ranks=get_position_embedding_ranks,
             ignore_unknown_args=True
         )

@@ -1,0 +1,199 @@
+runtime:
+  seed: &seed 42 # 131
+  tensor_model_parallel_size: 4 # 8
+  pipeline_model_parallel_size: 4 # 8
+  deepspeed: True
+  lora_mode: False
+  bf16: &bf16 True
+  fp16: &fp16 False
+  freeze_vit: False
+  freeze_llm: False
+  unfreeze_lm_head: True
+  freeze_mlp: False
+  force_image_size: &force_image_size 448
+  patch_size: &patch_size 14
+  down_sample_ratio: &down_sample_ratio 0.5
+  dynamic: True
+
+deepspeed:
+  config:
+    gradient_clipping: 1.0
+    zero_optimization:
+      stage: 0
+    bf16:
+      enabled: *bf16
+    fp16:
+      enabled: *fp16
+    steps_per_print: 10
+    wall_clock_breakdown: False
+
+tokenizer:
+  type: AutoTokenizer # InternLM2Tokenizer
+  kwargs:
+    tokenizer_name_or_path: /mnt/afs_2/basemodel/internlm2.5/internlm2_5-20b-chat
+    add_eos_token: False
+    trust_remote_code: True
+    use_fast: True
+    use_auth_token: False
+  pad_vocab_size_to: 92560
+
+tokenization: &tokenization
+  type: sense_tokenization
+  kwargs:
+    with_tokenizer: True
+    max_seq_length: &train_seq_length 4096 # 4096
+    parser_type: internvl_tools
+    parser_kwargs:
+      use_knowledge: False
+      min_dynamic_patch: 8
+      max_dynamic_patch: 8
+      image_size: 448
+      use_thumbnail: True
+      dynamic_image_size: True
+      num_image_token: 256
+      read_img: True
+
+
+
+data:
+  data_types: [train]
+  train:
+    seq_length: *train_seq_length
+    global_batch_size: &train_global_batch_size 128 # 2048
+    micro_batch_size: &train_micro_batch_size 1
+    dataset:
+          type: internvl_tools # base_nlp_json
+          kwargs:
+            # json_file: /mnt/afs_2/yaoyongqiang/exps/code/0701_paper_exps/datasets/internvl_1_2_1.2M/internvl_sft_1.2M.json
+            json_file: /mnt/afs_2/liangkaihuan/Codes/lm-toolchain/easyllm/scripts/megatron-lm/internvl_sft_1.2M.json
+            transformer: [*tokenization]
+            json_type: line
+            data_format: wrap
+            count_length: False
+    batch_sampler:
+      type: megatron_pretrain_random
+      kwargs:
+        micro_batch_size: *train_micro_batch_size
+    batch_collector:
+      type: internvl # batch_align
+      kwargs:
+        alignment: *train_seq_length
+    data_loader:
+      type: base
+      kwargs:
+        num_workers: 4
+        pin_memory: True
+        seed: *seed
+    batch_pipe:
+      type: flash_batch_pipe_internvl
+      kwargs:
+        pretrain: False
+    batch_calculator:
+      type: constant_num # rampup_batch_size_num
+      kwargs:
+        global_batch_size: *train_global_batch_size
+        micro_batch_size: *train_micro_batch_size
+
+
+trainer:
+  epoch: 1
+  optimizer:
+    type: AdamW # FusedAdam      # apex FusedAdam
+    kwargs:
+      lr: 1.0e-5
+      weight_decay: 0.05
+      betas: [0.9, 0.999]
+      eps: 1.e-8
+      fused: True
+  lr_scheduler:
+    type: cosine_internvl
+    kwargs:
+      warmup_steps: 60
+
+saver:
+  save_path: checkpoints/6b_20b_packed_vit9
+  save_interval: 200              # set save_interval to 0 to not save any ckpt.
+  save_mode: deepspeed
+  save_optim: True
+  save_rng_state: True
+  save_zero: True
+  enabled: False
+
+loader:
+  load_path: /mnt/afs_2/hujiahao1/hf_models/internvl/6B_20B/weights/internvl_chat_internlm2_20b_448_dynamic_chinese_pretrain/checkpoint-5200
+  # load_path: /root/checkpoint-5200
+  load_mode: huggingface
+  # load_path: checkpoints/sft_llama_7b
+  # load_mode: deepspeed
+  load_optim: True
+  load_rng_state: True
+  load_zero: False
+  load_base_state: False
+  debug: True
+  pretrain_type: internvl_pack
+
+
+hooks:
+  - type: train_val_logger
+    kwargs:
+      log_interval: 1
+      report_memory_interval: 10
+      log_dir: outputs/108b/tf_logs
+      tensorboard: True
+
+model:
+  type: intern_custom
+  kwargs:
+    use_flash_attn: True
+    # llm
+    num_layers: 48
+    hidden_size: 6144
+    num_attention_heads: 48
+    num_kv_attention_heads: 8
+    intermediate_size: 16384
+    eps: 0.00001
+    # vision
+    num_vit_layers: 45
+    vision_hidden_size: 3200
+    vision_patch_size: 14
+    vision_intermediate_size: 12800
+    vision_num_attention_heads: 25
+    vision_attention_dropout: 0.0
+    vision_layer_norm_eps: 0.00001
+    vit_select_layer: -1
+    drop_path_rate: 0.4
+    initializer_factor: 0.1
+    qk_normalization: True
+    proj_dropout: 0.0
+    image_fold: False
+    # pp_partition_method: parameters
+    # pp_partition_method: "manual:0,24,48,73,101"
+    pp_partition_method: "manual:0,23,47,72,101"
+    sequence_parallel: True
+    layer_profile: False
+    transformer_layer_params:
+        position_embedding_kwargs:
+           base: 1000000
+        qkv_pack: True
+    layer_norm_params:
+         kwargs:
+            eps: 0.00001
+    loss_params:
+       type: softmax_cross_entropy
+       kwargs:
+         dp_reduce: False
+    dynamic_checkpoint:
+      enabled: True
+      dc_profile:
+         enabled: False
+         global_batch_size: *train_global_batch_size
+         warmup_iter: 5
+         min_memory: 5
+         vit_memory_estimate: 8 # gpu memory consume predict for nockpt
+         llm_memory_estimate: 2
+      size_map:
+        1024: 0
+        4096: [0, 0, 0, 0]
+        8192: [0, 0, 0, 0]
+        9192: [0, 0, 0, 0]
+        16400: [0, 0, 0, 0]
