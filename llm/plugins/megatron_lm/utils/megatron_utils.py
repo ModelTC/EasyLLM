@@ -17,6 +17,7 @@ from megatron.core.models.gpt import GPTModel
 from megatron.core.utils import StragglerDetector
 from llm.utils.general.log_helper import default_logger as logger
 from megatron.core import tensor_parallel
+from megatron.core.packed_seq_params import PackedSeqParams
 
 stimer = StragglerDetector()
 
@@ -126,7 +127,7 @@ def get_batch_vlm(data_iterator):
     else:
         data = None
 
-    data_i = tensor_parallel.broadcast_data(["input_ids", "position_ids", "labels", "image_flags"], data, torch.int64)
+    data_i = tensor_parallel.broadcast_data(["input_ids", "position_ids", "labels", "image_flags", "cu_seqlens"], data, torch.int64)
     data_f = tensor_parallel.broadcast_data(["pixel_values"], data, torch.float32)
     data_b = tensor_parallel.broadcast_data(["attention_mask", "loss_mask"], data, torch.bool)
 
@@ -134,13 +135,14 @@ def get_batch_vlm(data_iterator):
     position_ids = data_i["position_ids"].long()
     labels = data_i["labels"].long()
     image_flags = data_i['image_flags'].long()
+    cu_seqlens = data_i['cu_seqlens'].int()
 
     pixel_values = data_f["pixel_values"].float()
     
     attention_mask = data_b["attention_mask"].bool()
     loss_mask = data_b["loss_mask"].bool()
 
-    return input_ids, position_ids, labels, image_flags, pixel_values, attention_mask, loss_mask
+    return input_ids, position_ids, labels, image_flags, cu_seqlens, pixel_values, attention_mask, loss_mask
 
 
 def forward_step_vlm(data_iterator, model):
@@ -150,19 +152,29 @@ def forward_step_vlm(data_iterator, model):
         data_iterator : Input data iterator
         model (GPTModel): The GPT Model
     """
+    logger.info("start forward...")
+
     timers = get_timers()
 
     # Get the batch.
     timers('batch-generator', log_level=2).start()
     global stimer
     with stimer(bdata=True):
-        input_ids, position_ids, labels, image_flags, pixel_values, attention_mask, loss_mask = get_batch_vlm(
+        input_ids, position_ids, labels, image_flags, cu_seqlens, pixel_values, attention_mask, loss_mask = get_batch_vlm(
             data_iterator)
     timers('batch-generator').stop()
 
     with stimer:
+        packed_seq_params = PackedSeqParams(
+            cu_seqlens_q=cu_seqlens[0],
+            cu_seqlens_kv=cu_seqlens[0],
+            qkv_format='thd',
+            # max_seqlen_q=cu_seqlens[0][-1],
+            # max_seqlen_kv=cu_seqlens[0][-1],
+        )
         output_tensor = model(pixel_values, input_ids, position_ids, 
-                              attention_mask, image_flags, labels)
+                              attention_mask, image_flags, labels,
+                              packed_seq_params=packed_seq_params)
 
     return output_tensor, partial(loss_func, loss_mask, labels)
 

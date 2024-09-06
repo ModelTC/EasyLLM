@@ -129,6 +129,5 @@ class VisionExtractFeat(MegatronModule):
         #     return vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels
         # elif len(inputs) == 7:
         #     return vit_embeds, input_ids, position_ids, attention_mask, image_flags, labels, cu_seqlens
-        
         # print(f'vit_embeds:{vit_embeds.shape}')
         return vit_embeds

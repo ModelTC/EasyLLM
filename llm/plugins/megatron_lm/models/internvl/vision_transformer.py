@@ -57,9 +57,9 @@ class InternAttention(MegatronModule):
             3 * self.embed_dim,
             gather_output=False,
             bias=False,
-            # params_dtype=params_dtype,
-            # sequence_parallel=sequence_parallel,
-            # num_attention_heads=num_attention_heads
+            params_dtype=params_dtype,
+            sequence_parallel=sequence_parallel,
+            num_attention_heads=num_attention_heads
         )
 
         # if config.qkv_bias:
@@ -79,9 +79,9 @@ class InternAttention(MegatronModule):
             self.embed_dim,
             input_is_parallel=True,
             bias=True,
-            # params_dtype=params_dtype,
-            # sequence_parallel=sequence_parallel,
-            # num_attention_heads=num_attention_heads
+            params_dtype=params_dtype,
+            sequence_parallel=sequence_parallel,
+            num_attention_heads=num_attention_heads
         )
         self.rank = parallel_state.get_tensor_model_parallel_rank()
         world_size = parallel_state.get_tensor_model_parallel_world_size()
@@ -127,6 +127,10 @@ class InternAttention(MegatronModule):
         # attention
         if self.use_flash_attn:
             mixed_qkv, _ = self.qkv(hidden_states)
+            # import torch
+            # if torch.distributed.get_rank() == 0:
+            #     import pdb;pdb.set_trace()
+            # torch.distributed.barrier()
             mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads_partions[self.rank], embed_dim // self.num_heads)
             # mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads // dist_env.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads)
             q, k, v = mixed_qkv.unbind(2)
@@ -272,8 +276,10 @@ class VisionTransformerLayer(MegatronModule):
         self.vit_select_layer = vit_select_layer
         self.ls1 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
         self.ls2 = nn.Parameter(initializer_factor * torch.ones(self.embed_dim))
-        self.drop_path1 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
-        self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        # self.drop_path1 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        # self.drop_path2 = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path1 = nn.Identity()
+        self.drop_path2 = nn.Identity()
         assert isinstance(self.num_vit_layers, int), "self.num_vit_layers must be int"
 
     def forward(self, ori_hidden_states):
@@ -295,6 +301,9 @@ class VisionTransformerLayer(MegatronModule):
         else:
             hidden_states = ori_hidden_states
 
+        # if torch.distributed.get_rank() == 0 and self.vision_layer_number == 2:
+        #     import pdb;pdb.set_trace()
+
         # print(f'hidden_states: {hidden_states.shape}')
         # hidden_states = hidden_states + self.drop_path1(self.attn(self.norm1(hidden_states=hidden_states,head_mask=attention_mask)) * self.ls1)
         hidden_states = hidden_states + self.drop_path1(self.attn(self.norm1(hidden_states)) * self.ls1)
@@ -309,8 +318,9 @@ class VisionTransformerLayer(MegatronModule):
         else:
             ori_hidden_states = hidden_states
 
-        # print(f'ori_hidden_states: {ori_hidden_states.shape}')
-        # print(f"vision_layer_number:{self.vision_layer_number},"
+        # print(f"rank:{torch.distributed.get_rank()},"
+        #       f"ori_hidden_states: {ori_hidden_states.shape}",
+        #       f"vision_layer_number:{self.vision_layer_number},"
         #       f"num_vit_layers:{self.num_vit_layers},"
         #       f"vit_select_layer:{self.vit_select_layer}")
 

@@ -23,6 +23,7 @@ from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.models.common.language_module.language_module import LanguageModule
+from megatron.core.packed_seq_params import PackedSeqParams
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -69,6 +70,7 @@ from ..embeddings import RotaryEmbedding
 class InternVLModel(LanguageModule):
     def __init__(
         self,
+        num_layers: int,
         num_vit_layers: int,
 
         vision_embedding_config: dict,
@@ -131,6 +133,9 @@ class InternVLModel(LanguageModule):
         # self.language_model = None
 
         language_transformer_config.variable_seq_lengths = True
+        # language_transformer_config.bias_dropout_fusion = False # DEBUG
+        # language_transformer_config.deallocate_pipeline_outputs = False
+        # language_transformer_config.apply_rope_fusion = False # DEBUG
         super().__init__(config=language_transformer_config)
 
         # post init in layer build
@@ -181,6 +186,14 @@ class InternVLModel(LanguageModule):
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
 
+        from llm.plugins.megatron_lm.models.internvl.utils import load_ckpt_pretrained
+        self.load_ckpt_pretrained = load_ckpt_pretrained
+
+        self.model_kwargs = {"num_vit_layers": num_vit_layers, 
+                             "num_layers": num_layers, 
+                            #  "checkpoint_activations": checkpoint_activations
+                            }
+
     def build_module_list(self):
         module_list = list()
 
@@ -195,16 +208,16 @@ class InternVLModel(LanguageModule):
         # visoin transformer layer
         num_vit_layers = self.num_vit_layers
         vision_transformer_layer_param = dict(
-            name="vision_transformer_layer",
             type=VisionTransformerLayer,
             kwargs=self.vision_transformer_config
         )
         dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_vit_layers)]
-        for vision_layer_idx in range(num_vit_layers):
-            single_layer_param = copy.deepcopy(vision_transformer_layer_param)
-            single_layer_param['kwargs'].update({'vision_layer_number': vision_layer_idx})
-            single_layer_param['kwargs'].update({'drop_path_rate': dpr[vision_layer_idx]})
-            module_list.append(single_layer_param)
+        for layer_idx in range(num_vit_layers):
+            layer_param = copy.deepcopy(vision_transformer_layer_param)
+            layer_param['name'] = f"vision_transformer_layer_{layer_idx}"
+            layer_param['kwargs'].update({'vision_layer_number': layer_idx})
+            layer_param['kwargs'].update({'drop_path_rate': dpr[layer_idx]})
+            module_list.append(layer_param)
 
         # vision extract feat
         vision_extract_feat_param = dict(
@@ -227,7 +240,7 @@ class InternVLModel(LanguageModule):
 
         # language transformer layer
         transformer_layer_params = dict(
-            name="language_transformer_layer",
+            # name="language_transformer_layer",
             type=TransformerLayer,
             kwargs=dict(
                 config=self.language_transformer_config,
@@ -235,8 +248,10 @@ class InternVLModel(LanguageModule):
             )
         )
         for layer_idx in range(self.language_transformer_config.num_layers):
-            transformer_layer_params['kwargs']["layer_number"] = layer_idx
-            module_list.append(transformer_layer_params)
+            layer_param = copy.deepcopy(transformer_layer_params)
+            layer_param['name'] = f"language_transformer_layer_{layer_idx}"
+            layer_param['kwargs']["layer_number"] = layer_idx
+            module_list.append(layer_param)
 
         # final layernorm after transformer layers
         layer_norm_params = dict(
@@ -309,7 +324,7 @@ class InternVLModel(LanguageModule):
         image_flags,
         labels: torch.Tensor = None,
         inference_params: InferenceParams = None,
-        packed_seq_params =  None,
+        packed_seq_params: PackedSeqParams = None,
     ) -> torch.Tensor:
 
         """Forward function of the LLaVA model.
@@ -327,15 +342,49 @@ class InternVLModel(LanguageModule):
         if not parallel_state.is_pipeline_first_stage():
             hidden_states = self.input_tensor
 
+            # Viewless tensor.
+            # - We only need to create a viewless tensor in the case of micro batch
+            #   size (mbs) == 1, since in this case, 'hidden_states.transpose()'
+            #   above creates a view tensor, and '.contiguous()' is a pass-through.
+            #   For mbs >= 2, '.contiguous()' creates a new tensor, eliminating
+            #   the need to make it viewless.
+            #
+            #   However, we don't explicitly check mbs == 1 here because
+            #   make_viewless_tensor() has negligible overhead when its input
+            #   is already viewless.
+            #
+            # - For the 'else' case above, calling make_viewless_tensor() here is
+            #   likely redundant, since p2p_communication.py (likely originator)
+            #   already creates viewless tensors. That said, make_viewless_tensor()
+            #   is called here to be future-proof and corner-case-proof.
+            hidden_states = make_viewless_tensor(
+                inp=hidden_states,
+                requires_grad=True,
+                keep_graph=True,
+            )
+
         # Rotary positional embeddings (embedding is None for PP intermediate devices)
         rotary_pos_emb = None
+        vit_idx = 0
+        llm_idx = 0
+        rank = torch.distributed.get_rank()
+
+        def custom_forward(forward_func, *args, is_recompute=True):
+            if is_recompute:
+                return tensor_parallel.checkpoint(
+                    forward_func,
+                    self.config.distribute_saved_activations,
+                    *args,
+                )
+            else:
+                return forward_func(*args)
 
         # for layer in self.layers:
         for idx in range(len(self.forward_funcs)):
             module_name = self.module_list[self._local_start + idx]["name"]
+            func = self.forward_funcs[idx]
+            is_recompute = True # TODO: add condition check
 
-            # if torch.distributed.get_rank() == 0:
-            #     import pdb;pdb.set_trace()
             # if self._local_start + idx == 0:
             #     print(f"rank:{torch.distributed.get_rank()}, idx:{idx}, "
             #       f"module_name:{module_name}, hidden_states:{pixel_values.shape}")
@@ -343,20 +392,31 @@ class InternVLModel(LanguageModule):
             #     print(f"rank:{torch.distributed.get_rank()}, idx:{idx}, "
             #         f"module_name:{module_name}, hidden_states:{hidden_states.shape}")
 
-            if module_name == "vision_embedding":
-                hidden_states = self.forward_funcs[idx](pixel_values)
+            if isinstance(func, VisionEmbedding):
+                hidden_states = func(pixel_values)
+                # hidden_states = custom_forward(func, pixel_values)
+                # if torch.distributed.get_rank() == 0:
+                #     torch.save(hidden_states, 'data/rank0_vit_embed.pt')
 
-            elif module_name == "vision_transformer_layer":
-                hidden_states = self.forward_funcs[idx](hidden_states)
+            elif isinstance(func, VisionTransformerLayer):
+                # hidden_states = func(hidden_states)
+                hidden_states = custom_forward(func, hidden_states)
+                # if torch.distributed.get_rank() == 0:
+                #     torch.save(hidden_states, f'data/rank0_vit_transformer_{vit_idx}.pt')
+                #     vit_idx += 1
 
-            elif module_name == "vision_extract_feat":
-                hidden_states = self.forward_funcs[idx](hidden_states)
+            elif isinstance(func, VisionExtractFeat):
+                hidden_states = func(hidden_states)
+                # if torch.distributed.get_rank() == 0:
+                #     torch.save(hidden_states, 'data/rank0_vit_extract_feat.pt')
 
-            elif module_name == "word_embedding":
+            elif isinstance(func, EmbeddingPipe):
                 vit_embedding = hidden_states
-                hidden_states = self.forward_funcs[idx](vit_embedding, input_ids, position_ids, image_flags)
+                hidden_states = func(vit_embedding, input_ids, position_ids, image_flags)
+                # if torch.distributed.get_rank() == 0:
+                #     torch.save(hidden_states, 'data/rank0_word_embedding.pt')
 
-            elif module_name == "language_transformer_layer":
+            elif isinstance(func, TransformerLayer):
                 if self.language_position_embedding_type == 'rope':
                     rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
                         inference_params, self.forward_funcs[idx], hidden_states, self.config
@@ -370,9 +430,17 @@ class InternVLModel(LanguageModule):
                     inference_params=inference_params,
                     packed_seq_params=packed_seq_params,
                 )
+                # if torch.distributed.get_rank() == 0:
+                #     torch.save(hidden_states, f'data/llm_transformer_{llm_idx}.pt')
+                #     llm_idx += 1
+                llm_idx = self.module_list[self._local_start + idx]['kwargs']["layer_number"]
+                torch.save(hidden_states, f'data/rank{rank}_llm_transformer_{llm_idx}.pt')
 
-            elif module_name == "final_layer_norm":
-                hidden_states = self.forward_funcs[idx](hidden_states)
+
+            elif module_name == "final_layernorm":
+                hidden_states = func(hidden_states)
+                if torch.distributed.get_rank() == 7:
+                    torch.save(hidden_states, 'data/final_layernorm.pt')
 
             elif module_name == "lm_head":
                 # logits and loss
@@ -381,11 +449,17 @@ class InternVLModel(LanguageModule):
                 #     output_weight = self.shared_embedding_or_output_weight()
                 logits, _ = self.forward_funcs[idx](hidden_states, weight=None)
 
+                if torch.distributed.get_rank() == 7:
+                    torch.save(logits, 'data/logits.pt')
+                    # import pdb;pdb.set_trace()
+
                 if labels is None:
                     # [s b h] => [b s h]
                     return logits.transpose(0, 1).contiguous()
 
                 loss = self.compute_language_model_loss(labels, logits)
+                if torch.distributed.get_rank() == 7:
+                    torch.save(logits, 'data/loss.pt')
                 return loss
 
         return hidden_states
@@ -486,6 +560,7 @@ class InternVLModel(LanguageModule):
         self._local_start = self.parts[stage_id]
         self._local_stop = self.parts[stage_id + 1]
         self.part_module_list = self.module_list[self._local_start:self._local_stop]
+        print(f'rank:{torch.distributed.get_rank()}, self.parts:{self.parts}')
 
     def build(self):
         for local_idx, layer in enumerate(self.part_module_list):
@@ -499,7 +574,9 @@ class InternVLModel(LanguageModule):
             #     else:
             #         continue
             module = module_type(**module_kwargs)
-            name = str(layer_idx)
+            # name = str(layer_idx)
+            # name = layer['name'] + '_' + str(layer_idx)
+            name = layer['name']
             self.forward_funcs.append(module)
             self.add_module(name, module)
 

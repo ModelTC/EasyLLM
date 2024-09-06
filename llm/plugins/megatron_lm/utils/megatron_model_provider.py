@@ -118,6 +118,38 @@ def get_llama_layer_with_transformer_engine_spec(
     )
 
 
+def get_llama_layer_with_transformer_engine_spec_test(
+    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+) -> ModuleSpec:
+    mlp = _get_mlp_module_spec(
+        use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
+    )
+    return ModuleSpec(
+        module=TransformerLayer,
+        submodules=TransformerLayerSubmodules(
+            input_layernorm=RMSNorm,    #TENorm,
+            self_attention=ModuleSpec(
+                module=SelfAttention,
+                params={"attn_mask_type": AttnMaskType.causal},
+                submodules=SelfAttentionSubmodules(
+                    linear_qkv=ColumnParallelLinear,  #TEColumnParallelLinear,
+                    core_attention=TEDotProductAttention,
+                    linear_proj=RowParallelLinear,    #TERowParallelLinear,
+                    # TENorm significantly harms convergence when used
+                    # for QKLayerNorm; we instead use the Apex implementation.
+                    q_layernorm=FusedLayerNorm if qk_layernorm else IdentityOp,
+                    k_layernorm=FusedLayerNorm if qk_layernorm else IdentityOp,
+                ),
+            ),
+            self_attn_bda=get_bias_dropout_add,
+            pre_mlp_layernorm=RMSNorm, #TENorm,  # if num_experts else IdentityOp,
+            mlp=mlp,
+            mlp_bda=get_bias_dropout_add,
+        ),
+    )
+
+
+
 # Use this spec for an implementation using only modules in megatron core
 def get_llama_layer_local_spec(
     num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
@@ -276,11 +308,13 @@ def model_provider_vlm(pre_process=True, post_process=True) -> Union[GPTModel, m
     else:
         if use_te:
             language_transformer_layer_spec = get_llama_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
+            # language_transformer_layer_spec = get_llama_layer_with_transformer_engine_spec_test(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
         else:
             language_transformer_layer_spec = get_llama_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
 
     cfg_model = args.cfg_model
     model = InternVLModel(
+        num_layers=cfg_model['num_layers'],
         num_vit_layers=cfg_model['num_vit_layers'],
 
         vision_embedding_config=cfg_model['vision_embedings_params'],

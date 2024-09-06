@@ -37,11 +37,15 @@ from llm.utils.general.yaml_loader import load_yaml
 from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
-from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
 from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider_vlm
 from llm.plugins.megatron_lm.utils.megatron_utils import forward_step_vlm, yaml2args
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
+
+# from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
+# from llm.plugins.megatron_lm.utils.internvl.ckpt_helper import load_checkpoint
+from llm.utils.model.ckpt_helper import load_checkpoint
+from llm.utils.model.lr_helper import build_learning_rate_scheduler
 
 from llm.plugins.megatron_lm.datas.internvl.data_utils import (
     IMG_CONTEXT_TOKEN,
@@ -54,6 +58,7 @@ from llm.plugins.megatron_lm.datas.internvl.data_utils import (
     QUAD_START_TOKEN,
     QUAD_END_TOKEN
 )
+from llm.plugins.megatron_lm.models.internvl.lr_helper import *
 
 if os.getenv("DIST_BACKEND", "easyllm") == "easyllm":
     from llm.utils.env import dist_env
@@ -63,8 +68,8 @@ elif os.getenv("DIST_BACKEND", "easyllm") == "megatron":
 
 _TRAIN_START_TIME = time.time()
 
-def get_ranks(pp_ranks):
-    return [3, 7]
+# def get_ranks(pp_ranks):
+#     return [0, 7]
 
 class MegatronRunner(object):
     def __init__(self, args, cfg=None, training=True, base_type='train'):
@@ -116,8 +121,8 @@ class MegatronRunner(object):
         initialize_megatron(
             extra_args_provider=extra_args_provider,
             args_defaults=args_defaults,
-            # get_embedding_ranks=get_embedding_ranks,
-            get_embedding_ranks=get_ranks,
+            get_embedding_ranks=get_embedding_ranks,
+            # get_embedding_ranks=get_ranks,
             get_position_embedding_ranks=get_position_embedding_ranks,
             ignore_unknown_args=True
         )
@@ -141,9 +146,23 @@ class MegatronRunner(object):
             args.num_floating_point_operations_so_far = 0
         else:
             timers('load-checkpoint', log_level=0).start(barrier=True)
+            args.iteration = 0
+            args.num_floating_point_operations_so_far = 0
             if cfg_loader.get("load_mode") == "huggingface":
-                args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
-                    self.model, self.optimizer, self.lr_scheduler, cfg_loader=cfg_loader)
+                # args.iteration, args.num_floating_point_operations_so_far = load_checkpoint(
+                #     self.model, self.optimizer, self.lr_scheduler, cfg_loader=cfg_loader)
+
+                # args = self.args
+                torch.distributed.barrier()
+                load_checkpoint(unwrapped_model[0], self.optimizer, cfg_loader,
+                                args.iteration)     # noqa
+
+                # TODO hardcode fix torch load bugs
+                # for k, v in self.optimizer.state_dict()['base_optimizer_state']['state'].items():
+                #     if 'step' in v:
+                #         v['step'] = v['step'].to(torch.cuda.current_device())
+                torch.distributed.barrier()
+
             else:
                 raise NotImplementedError('only support huggingface load mode.')
             timers('load-checkpoint').stop(barrier=True)
@@ -225,7 +244,12 @@ class MegatronRunner(object):
             config.timers = timers
             optimizer = get_megatron_optimizer(config, self.model, no_wd_decay_cond,
                                                scale_lr_cond, lr_mult)
-            lr_scheduler = get_optimizer_param_scheduler(optimizer)
+            # lr_scheduler = get_optimizer_param_scheduler(optimizer)
+            cfg_lr_scheduler = self.config['trainer']['lr_scheduler']
+            cfg_lr_scheduler['kwargs']['max_lr'] = self.config['trainer']['optimizer']['kwargs']['lr']        # noqa
+            if cfg_lr_scheduler['type'] == 'iter_base_annealing':
+                cfg_lr_scheduler['kwargs']['global_batch_size'] = self.num_microbatches_calculator.global_batch_size
+            lr_scheduler = build_learning_rate_scheduler(cfg_lr_scheduler, optimizer.optimizer)
         else:
             optimizer = None
             lr_scheduler = None
@@ -297,7 +321,8 @@ class MegatronRunner(object):
             increment = self.num_microbatches_calculator.get() * \
                 args.micro_batch_size * \
                 args.data_parallel_size
-            self.lr_scheduler.step(increment=increment)
+            # self.lr_scheduler.step(increment=increment)
+            self.lr_scheduler.step()
             skipped_iter = 0
         else:
             skipped_iter = 1
@@ -371,7 +396,7 @@ class MegatronRunner(object):
         config.finalize_model_grads_func = finalize_model_grads
         # TODO: resume training
         for iteration in range(self.start_iteration, args.train_iters + 1):
-            logger.info('start iteration {iteration}')
+            logger.info(f'start iteration {iteration}')
             self.num_microbatches_calculator.update(self.consumed_train_samples, True)
             args.curr_iteration = iteration
             loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = self.forward_step()

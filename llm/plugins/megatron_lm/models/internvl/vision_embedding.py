@@ -130,6 +130,13 @@ class VisionEmbedding(MegatronModule):
             # set to [s b h] --> [b s h].
             embeddings = embeddings.transpose(0, 1).contiguous()
 
+
+        # if torch.distributed.get_rank() == 0:
+        #     torch.save(pixel_values, 'data/rank0_pixel_values.pt')
+        #     torch.save(embeddings, 'data/rank0_embeddings.pt')
+        #     torch.save(self.patch_embedding.weight.data, 'data/rank0_weight.pt')
+        #     import pdb;pdb.set_trace()
+
         # if len(inputs) == 5:
         #     return embeddings, input_ids, position_ids, image_flags
         # elif len(inputs) == 6:
