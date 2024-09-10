@@ -28,6 +28,43 @@ try:
 except ImportError:
     rearrange = None
 
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TENorm,
+        get_cpu_offload_context,
+    )
+
+    HAVE_TE = True
+    LayerNormImpl = TENorm
+except ImportError:
+    HAVE_TE = False
+    get_cpu_offload_context = None
+    try:
+        import apex  # noqa
+
+        LayerNormImpl = FusedLayerNorm
+    except ModuleNotFoundError:
+        from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
+
+        LayerNormImpl = WrappedTorchLayerNorm
+
+
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TEColumnParallelGroupedLinear,
+        TEColumnParallelLinear,
+        TEDotProductAttention,
+        TENorm,
+        TERowParallelGroupedLinear,
+        TERowParallelLinear,
+    )
+
+    HAVE_TE = True
+except ImportError:
+    HAVE_TE = False
+
+from megatron.core.transformer.enums import AttnMaskType
+
 
 class InternAttention(MegatronModule):
     def __init__(
@@ -63,6 +100,7 @@ class InternAttention(MegatronModule):
         #     sequence_parallel=sequence_parallel,
         #     num_attention_heads=num_attention_heads
         # )
+        te_config.sequence_parallel = sequence_parallel
         self.qkv = TEColumnParallelLinear(
             self.embed_dim,
             3 * self.embed_dim,
@@ -121,7 +159,9 @@ class InternAttention(MegatronModule):
             # )
             self.core_attention_flash = TEDotProductAttention(
                 config=te_config,
-                layer_number=layer_number
+                layer_number=layer_number,
+                attn_mask_type=AttnMaskType.causal,
+                attention_type="self"
             )
 
         self.qk_normalization = qk_normalization
@@ -177,8 +217,9 @@ class InternAttention(MegatronModule):
                 if cu_seqlens is not None:
                     qk_mask = None
             with tensor_parallel.get_cuda_rng_tracker().fork():
-                context_layer = self.core_attention_flash(query_states, key_states, value_states, qk_mask)
-            context_layer = rearrange(context_layer, 'b s h d -> b s (h d)').contiguous()
+                # context_layer = self.core_attention_flash(query_states, key_states, value_states, qk_mask)
+                context_layer = self.core_attention_flash(query_states, key_states, value_states, qk_mask, attn_mask_type=AttnMaskType.causal)
+            # context_layer = rearrange(context_layer, 'b s h d -> b s (h d)').contiguous()
         else:
             mixed_qkv = mixed_qkv.reshape(bsz, tgt_len, 3, self.num_heads // parallel_state.get_tensor_model_parallel_world_size(), embed_dim // self.num_heads)
             query_states, key_states, value_states = mixed_qkv.unbind(2)
@@ -217,7 +258,8 @@ class InternMLP(MegatronModule):
         hidden_size,
         intermediate_size,
         params_dtype=torch.half,
-        sequence_parallel=False
+        sequence_parallel=False,
+        te_config=None
     ):
         super().__init__()
         self.sequence_parallel = sequence_parallel
@@ -230,14 +272,14 @@ class InternMLP(MegatronModule):
         #     # sequence_parallel=sequence_parallel
         # )
         self.fc1 = TEColumnParallelLinear(
-            self.input_size,
-            ffn_hidden_size,
+            hidden_size,
+            intermediate_size,
             config=te_config,
             init_method=te_config.init_method,
             gather_output=False,
             bias=te_config.add_bias_linear,
             skip_bias_add=True,
-            is_expert=is_expert,
+            is_expert=False, # is_expert,
             tp_comm_buffer_name='fc1'
         )
 
@@ -256,7 +298,7 @@ class InternMLP(MegatronModule):
             bias=te_config.add_bias_linear,
             input_is_parallel=True,
             skip_bias_add=True,
-            is_expert=is_expert,
+            is_expert=False, # is_expert,
             tp_comm_buffer_name='fc2'
         )
 
@@ -304,8 +346,8 @@ class TEVisionTransformerLayer(MegatronModule):
         # self.norm1 = build_layer_norm(layer_norm)
         self.norm1 = TENorm(
             config=te_config,
-            hidden_size=layer_norm.hidden_size,
-            eps=layer_norm.eps
+            hidden_size=layer_norm["kwargs"]["normalized_shape"],
+            eps=layer_norm["kwargs"]["eps"]
         )
         self.attn = InternAttention(
             hidden_size,
@@ -325,13 +367,14 @@ class TEVisionTransformerLayer(MegatronModule):
             hidden_size,
             intermediate_size,
             params_dtype=params_dtype,
-            sequence_parallel=sequence_parallel
+            sequence_parallel=sequence_parallel,
+            te_config=te_config
         )
         # self.norm2 = build_layer_norm(layer_norm)
         self.norm2 = TENorm(
             config=te_config,
-            hidden_size=layer_norm.hidden_size,
-            eps=layer_norm.eps
+            hidden_size=layer_norm["kwargs"]["normalized_shape"],
+            eps=layer_norm["kwargs"]["eps"]
         )
         self.vision_layer_number = vision_layer_number
         self.num_vit_layers = num_vit_layers
