@@ -207,8 +207,13 @@ class InternVLModel(LanguageModule):
 
         # visoin transformer layer
         num_vit_layers = self.num_vit_layers
+        # vision_transformer_layer_param = dict(
+        #     type=VisionTransformerLayer,
+        #     kwargs=self.vision_transformer_config
+        # )
+        self.vision_transformer_config["te_config"] = self.language_transformer_config
         vision_transformer_layer_param = dict(
-            type=VisionTransformerLayer,
+            type=TEVisionTransformerLayer,
             kwargs=self.vision_transformer_config
         )
         dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_vit_layers)]
