@@ -104,13 +104,17 @@ class VisionExtractFeat(MegatronModule):
         # print(f'feat_extract hidden_states:{hidden_states.shape}')
         if self.sequence_parallel:
             seq_len_base = (self.image_size // self.patch_size) ** 2
-            hidden_states = hidden_states.transpose(0, 2).contiguous()
+            # hidden_states = hidden_states.transpose(0, 2).contiguous()
+            hidden_states = hidden_states.transpose(0, 1).contiguous()
             hidden_states = tensor_parallel.gather_from_sequence_parallel_region(hidden_states,
                                                                           tensor_parallel_output_grad=True)
-            hidden_states = hidden_states.transpose(0, 2).contiguous()
-            vit_embeds = hidden_states[self.vit_select_layer][:, 1:(1 + seq_len_base), :]
+            # hidden_states = hidden_states.transpose(0, 2).contiguous()
+            hidden_states = hidden_states.transpose(0, 1).contiguous()
+            # vit_embeds = hidden_states[self.vit_select_layer][:, 1:(1 + seq_len_base), :]
+            vit_embeds = hidden_states[:, 1:(1 + seq_len_base), :]
         else:
-            vit_embeds = hidden_states[self.vit_select_layer][:, 1:, :]
+            # vit_embeds = hidden_states[self.vit_select_layer][:, 1:, :]
+            vit_embeds = hidden_states[:, 1:, :]
 
         if self.image_fold:
             vit_embeds = window_reverse(vit_embeds, window_size=self.image_size // (self.image_fold * self.patch_size),

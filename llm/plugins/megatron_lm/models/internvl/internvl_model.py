@@ -208,19 +208,19 @@ class InternVLModel(LanguageModule):
 
         # visoin transformer layer
         num_vit_layers = self.num_vit_layers
-        # vision_transformer_layer_param = dict(
-        #     type=VisionTransformerLayer,
-        #     kwargs=self.vision_transformer_config
-        # )
-        self.vision_transformer_config["te_config"] = copy.deepcopy(self.language_transformer_config)
-        self.vision_transformer_config["te_config"].num_attention_heads = self.vision_transformer_config['num_attention_heads']
-        self.vision_transformer_config["te_config"].num_query_groups = self.vision_transformer_config['num_attention_heads']
-        self.vision_transformer_config["te_config"].hidden_size = self.vision_transformer_config['hidden_size']
-        self.vision_transformer_config["te_config"].ffn_hidden_size = self.vision_transformer_config['intermediate_size']
         vision_transformer_layer_param = dict(
-            type=TEVisionTransformerLayer,
+            type=VisionTransformerLayer,
             kwargs=self.vision_transformer_config
         )
+        # self.vision_transformer_config["te_config"] = copy.deepcopy(self.language_transformer_config)
+        # self.vision_transformer_config["te_config"].num_attention_heads = self.vision_transformer_config['num_attention_heads']
+        # self.vision_transformer_config["te_config"].num_query_groups = self.vision_transformer_config['num_attention_heads']
+        # self.vision_transformer_config["te_config"].hidden_size = self.vision_transformer_config['hidden_size']
+        # self.vision_transformer_config["te_config"].ffn_hidden_size = self.vision_transformer_config['intermediate_size']
+        # vision_transformer_layer_param = dict(
+        #     type=TEVisionTransformerLayer,
+        #     kwargs=self.vision_transformer_config
+        # )
         dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, num_vit_layers)]
         for layer_idx in range(num_vit_layers):
             layer_param = copy.deepcopy(vision_transformer_layer_param)
@@ -408,9 +408,8 @@ class InternVLModel(LanguageModule):
                 # if torch.distributed.get_rank() == 0:
                 #     torch.save(hidden_states, 'data/rank0_vit_embed.pt')
 
-            # elif isinstance(func, VisionTransformerLayer):
-            #     hidden_states = func(hidden_states)
-            elif isinstance(func, TEVisionTransformerLayer):
+            elif isinstance(func, VisionTransformerLayer):
+            # elif isinstance(func, TEVisionTransformerLayer):
                 hidden_states = func(hidden_states)
                 # hidden_states = custom_forward(func, hidden_states)
                 # if torch.distributed.get_rank() == 0:
