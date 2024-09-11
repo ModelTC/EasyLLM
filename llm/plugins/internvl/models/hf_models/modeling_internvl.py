@@ -203,13 +203,14 @@ class InternVLChatModel(PreTrainedModel):
 
         try:
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds.reshape(-1, C)
+            ignore_flag = False
         except Exception as e:
             vit_embeds = vit_embeds.reshape(-1, C)
             print(f'warning: {e}, input_embeds[selected].shape={input_embeds[selected].shape}, '
                   f'vit_embeds.shape={vit_embeds.shape}')
-            n_token = min(selected.sum(), vit_embeds.shape[0])
-            selected = selected[:n_token]
+            n_token = selected.sum()
             input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds[:n_token]
+            ignore_flag = True
 
         if self.SP_SIZE > 1 and len(image_flags) != pixel_values.shape[0]:
             length = input_embeds.shape[0]
@@ -256,6 +257,8 @@ class InternVLChatModel(PreTrainedModel):
             #     sp_group = get_sequence_parallel_group()
             #     num_tokens = (shift_labels != -100).sum()
             #     loss = reduce_sequence_parallel_loss(loss, num_tokens, sp_group)
+            if ignore_flag:
+                loss = loss * 0.0
 
         if not return_dict:
             output = (logits,) + outputs[1:]
