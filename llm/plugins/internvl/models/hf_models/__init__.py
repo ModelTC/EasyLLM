@@ -11,10 +11,13 @@ from llm.utils.general.log_helper import default_logger as logger
 def build_model(**cfg):
     model_name_or_path = cfg.get("model_name_or_path", None)
     if model_name_or_path is None:
+        from_config = cfg.pop("from_config", False)
         vision_config = InternVisionConfig.from_pretrained(cfg["vision_path"])
         vision_config.drop_path_rate = cfg["drop_path_rate"]
-        vision_model = InternVisionModel.from_pretrained(cfg["vision_path"], torch_dtype=torch.bfloat16, config=vision_config)
-        # vision_model = InternVisionModel._from_config(vision_config, torch_dtype=torch.bfloat16)
+        if not from_config:
+            vision_model = InternVisionModel.from_pretrained(cfg["vision_path"], torch_dtype=torch.bfloat16, config=vision_config)
+        else:
+            vision_model = InternVisionModel._from_config(vision_config, torch_dtype=torch.bfloat16)
 
         # llm_config = AutoConfig.from_pretrained(cfg["llm_path"], trust_remote_code=True)
         from .configuration_internlm2 import InternLM2Config
@@ -23,12 +26,16 @@ def build_model(**cfg):
         if llm_config.model_type == 'llama':
             from .modeling_llama import LlamaForCausalLM
             llm_config._attn_implementation = "flash_attention_2"
-            llm = LlamaForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
-            # llm = LlamaForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
+            if not from_config:
+                llm = LlamaForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
+            else:
+                llm = LlamaForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
         elif llm_config.model_type == 'internlm2':
             llm_config.attn_implementation = "flash_attention_2"
-            llm = InternLM2ForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
-            # llm = InternLM2ForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
+            if not from_config:
+                llm = InternLM2ForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
+            else:
+                llm = InternLM2ForCausalLM._from_config(llm_config, torch_dtype=torch.bfloat16)
         else:
             from transformers import AutoModelForCausalLM
             llm = AutoModelForCausalLM.from_pretrained(cfg["llm_path"], torch_dtype=torch.bfloat16, config=llm_config, trust_remote_code=True)
