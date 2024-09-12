@@ -334,7 +334,8 @@ def model_provider_vlm(pre_process=True, post_process=True) -> Union[GPTModel, m
         rotary_percent=args.rotary_percent,
         rotary_base=args.rotary_base,
 
-        share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
+        share_embeddings_and_output_weights=False,
+        # share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
     )
 
 

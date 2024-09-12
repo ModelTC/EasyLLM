@@ -2,7 +2,7 @@
 set -x -e 
 
 
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export DIST_BACKEND=megatron
 export ACCELERATOR_BACKEND=CUDA
@@ -42,8 +42,7 @@ export CMD=" \
 echo $CMD
 
 bash -c "$LAUNCHER $CMD" 2>&1 | tee logs/mg_train_$(basename $config).$3.log
-#> logs/mg_train_$(basename $config).$3.log 2>&1 
-#bash -c "$LAUNCHER $CMD"  2>&1 | tee logs/mg_train_$(basename $config).$2.log
+# bash -c "$LAUNCHER $CMD" > logs/mg_train_$(basename $config).$3.log 2>&1 &
 
 echo "END TIME: $(date)"
 

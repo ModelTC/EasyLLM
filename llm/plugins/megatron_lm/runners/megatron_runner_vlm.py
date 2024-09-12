@@ -123,7 +123,7 @@ class MegatronRunner(object):
             extra_args_provider=extra_args_provider,
             args_defaults=args_defaults,
             # get_embedding_ranks=get_embedding_ranks,
-            get_embedding_ranks=get_ranks,
+            # get_embedding_ranks=get_ranks,
             get_position_embedding_ranks=get_position_embedding_ranks,
             ignore_unknown_args=True
         )

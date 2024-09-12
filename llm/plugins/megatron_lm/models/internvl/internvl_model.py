@@ -134,7 +134,7 @@ class InternVLModel(LanguageModule):
 
         language_transformer_config.variable_seq_lengths = True
         # language_transformer_config.bias_dropout_fusion = False # DEBUG
-        language_transformer_config.deallocate_pipeline_outputs = False
+        language_transformer_config.deallocate_pipeline_outputs = True
         # language_transformer_config.apply_rope_fusion = False # DEBUG
         super().__init__(config=language_transformer_config)
 

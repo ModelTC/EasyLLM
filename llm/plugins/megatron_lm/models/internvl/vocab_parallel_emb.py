@@ -6,10 +6,14 @@ from functools import partial
 
 # from llm.utils.env import dist_env
 from megatron.core import parallel_state, tensor_parallel
-from llm.utils.model.initializer import _initialize_affine_weight_gpu
-from llm.utils.model.initializer import _initialize_affine_weight_cpu
+# from llm.utils.model.initializer import _initialize_affine_weight_gpu
+# from llm.utils.model.initializer import _initialize_affine_weight_cpu
 from llm.utils.model.initializer import xavier_uniform_tensor_parallel_
 
+from megatron.core.tensor_parallel.layers import (
+    _initialize_affine_weight_gpu,
+    _initialize_affine_weight_cpu,
+)
 
 class VocabUtility:
     """Split the vocabulary into `world_size` chunks amd return the
@@ -89,15 +93,15 @@ class VocabParallelEmbedding(torch.nn.Module):
             self.weight = Parameter(torch.empty(
                 self.num_embeddings_per_partition, self.embedding_dim,
                 dtype=self.params_dtype))
-            # _initialize_affine_weight_cpu(
-            #     self.weight, self.num_embeddings, self.embedding_dim,
-            #     self.num_embeddings_per_partition, 0, init_method)
+            _initialize_affine_weight_cpu(
+                self.weight, self.num_embeddings, self.embedding_dim,
+                self.num_embeddings_per_partition, 0, init_method)
         else:
             self.weight = Parameter(torch.empty(
                 self.num_embeddings_per_partition, self.embedding_dim,
                 device=torch.cuda.current_device(), dtype=self.params_dtype))
-            # _initialize_affine_weight_gpu(self.weight, init_method,
-            #                               partition_dim=0, stride=1)
+            _initialize_affine_weight_gpu(self.weight, init_method,
+                                          partition_dim=0, stride=1)
 
         if self.use_bnb_optimizer:
             from bitsandbytes.optim import GlobalOptimManager
