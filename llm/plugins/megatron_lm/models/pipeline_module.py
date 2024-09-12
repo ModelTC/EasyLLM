@@ -242,7 +242,8 @@ class PipelineParallelModule(LanguageModule):
         context_mask: Tensor,
         rotary_pos_emb: Tensor,
         packed_seq_params: PackedSeqParams,
-        tf_idx: int
+        tf_idx: int,
+        sequence_parallel: bool
     ):
         """Forward method with activation checkpointing."""
 
@@ -303,6 +304,8 @@ class PipelineParallelModule(LanguageModule):
             if hidden_states == None:
                 hidden_states = self.forward_funcs[l].input_tensor
             seq_len = hidden_states.shape[0]
+            if sequence_parallel:
+                seq_len *= dist_env.get_tensor_model_parallel_world_size()
             recompute_layer_num = self._get_recompute_layer_num(seq_len)
 
             if tf_idx < recompute_layer_num:

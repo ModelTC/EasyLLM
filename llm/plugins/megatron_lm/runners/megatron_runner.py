@@ -38,7 +38,7 @@ from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.plugins.megatron_lm.utils.megatron_checkpointing import load_checkpoint
-from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider, model_provider_vlm
+from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider
 from llm.plugins.megatron_lm.utils.megatron_utils import forward_step, yaml2args
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
@@ -146,8 +146,7 @@ class MegatronRunner(object):
                 self.optimizer.reload_model_params()
 
     def build_model(self, model_type=ModelType.encoder_or_decoder):
-        # self.model = get_model(model_provider, model_type)
-        self.model = get_model(model_provider_vlm, model_type)
+        self.model = get_model(model_provider, model_type)
 
     def build_tokenizer(self):
         self.tokenizer = build_tokenizer(self.config['tokenizer'])

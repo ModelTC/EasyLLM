@@ -525,7 +525,8 @@ def yaml2args(config, extra_args_provider=None, ignore_unknown_args=True, args_d
     if cfg_model['num_kv_attention_heads'] != cfg_model['num_attention_heads']:
         args.group_query_attention = True
         args.num_query_groups = cfg_model['num_kv_attention_heads']
-    position_embedding_kwargs = cfg_model['transformer_layer_params']['position_embedding_kwargs']
+    position_embedding_kwargs = cfg_model['transformer_layer_params'].get('position_embedding_kwargs')
+    position_embedding_kwargs = {} if position_embedding_kwargs is None else position_embedding_kwargs
     args.init_method_std = cfg_model['transformer_layer_params']['initializer']['kwargs']['sigma']
     args.rotary_base = position_embedding_kwargs.get('base', 10000)
     args.use_flash_attn = cfg_model.get('use_flash_attn', True)

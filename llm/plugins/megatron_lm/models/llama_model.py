@@ -224,7 +224,8 @@ class LlaMAModel(PipelineParallelModule):
                             context_mask=None,
                             rotary_pos_emb=rotary_pos_emb,
                             packed_seq_params=packed_seq_params,
-                            tf_idx=tf_idx
+                            tf_idx=tf_idx,
+                            sequence_parallel=self.config.sequence_parallel
                         )
                     else:
                         decoder_input, context = self.forward_funcs[idx](
