@@ -38,7 +38,7 @@ from llm.utils.env import set_random_seed
 from llm.utils.general.microbatches import build_num_microbatches_calculator
 from llm.data import build_tokenizer, build_data_iterator
 from llm.plugins.megatron_lm.utils.megatron_model_provider import model_provider_vlm
-from llm.plugins.megatron_lm.utils.megatron_utils import forward_step_vlm, yaml2args
+from llm.plugins.megatron_lm.utils.megatron_utils import forward_step_vlm, yaml2args_vlm
 from llm.utils.general.hook_helper import build_hooks
 from llm.utils.general.log_helper import default_logger as logger
 
@@ -77,7 +77,7 @@ class MegatronRunner(object):
         self.args = args
         self.config = copy.deepcopy(cfg)
         # mapping yaml args to megatron args
-        yaml2args(self.config)
+        yaml2args_vlm(self.config)
         self.training = training
         self.base_type = base_type
         self.build()
