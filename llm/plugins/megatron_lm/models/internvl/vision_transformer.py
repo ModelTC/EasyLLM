@@ -317,6 +317,8 @@ class VisionTransformerLayer(MegatronModule):
             ori_hidden_states = torch.cat([ori_hidden_states, hidden_states.unsqueeze(0)])
         else:
             ori_hidden_states = hidden_states
+        if self.vision_layer_number == self.num_vit_layers - 1:
+            ori_hidden_states = ori_hidden_states[self.vit_select_layer]
 
         # print(f"rank:{torch.distributed.get_rank()},"
         #       f"ori_hidden_states: {ori_hidden_states.shape}",
