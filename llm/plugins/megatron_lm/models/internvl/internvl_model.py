@@ -135,7 +135,7 @@ class InternVLModel(LanguageModule):
 
         language_transformer_config.variable_seq_lengths = True
         # language_transformer_config.bias_dropout_fusion = False # DEBUG
-        language_transformer_config.deallocate_pipeline_outputs = True
+        language_transformer_config.deallocate_pipeline_outputs = False
         # language_transformer_config.apply_rope_fusion = False # DEBUG
         super().__init__(config=language_transformer_config)
 
@@ -410,8 +410,8 @@ class InternVLModel(LanguageModule):
 
             elif isinstance(func, VisionTransformerLayer):
             # elif isinstance(func, TEVisionTransformerLayer):
-                hidden_states = func(hidden_states)
-                # hidden_states = custom_forward(func, hidden_states)
+                # hidden_states = func(hidden_states)
+                hidden_states = custom_forward(func, hidden_states)
                 # if torch.distributed.get_rank() == 0:
                 #     torch.save(hidden_states, f'data/rank0_vit_transformer_{vit_idx}.pt')
                 #     vit_idx += 1
