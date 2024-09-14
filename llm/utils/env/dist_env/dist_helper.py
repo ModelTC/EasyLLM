@@ -559,9 +559,9 @@ def get_distributed_info(cfg_runtime, launcher, port=13333):
     if launcher == 'mpi':
         set_mpi_dist_info(port)
 
-    tensor_model_parallel_size = cfg_runtime.get('tensor_model_parallel_size', -1)
-    pipeline_model_parallel_size = cfg_runtime.get('pipeline_model_parallel_size', -1)
-    context_parallel_size = cfg_runtime.get('context_parallel_size', -1)
+    tensor_model_parallel_size = cfg_runtime.get('tensor_model_parallel_size', 1)
+    pipeline_model_parallel_size = cfg_runtime.get('pipeline_model_parallel_size', 1)
+    context_parallel_size = cfg_runtime.get('context_parallel_size', 1)
     assert tensor_model_parallel_size > 0, 'You must provide a positive tensor_model_parallel_size'
     assert pipeline_model_parallel_size > 0, 'You must provide a positive pipeline_model_parallel_size'
     assert context_parallel_size > 0, 'You must provide a positive context_parallel_size'
